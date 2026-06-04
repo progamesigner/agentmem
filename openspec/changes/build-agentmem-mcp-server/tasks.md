@@ -10,17 +10,17 @@
 
 ## 2. Configuration layer
 
-- [ ] 2.1 Define a `Config` struct in `config.rs` matching every env var listed in `specs/configuration/spec.md`
-- [ ] 2.2 Implement `Config::from_env()` returning a typed error per the configuration spec's fail-fast scenarios
-- [ ] 2.3 Implement `Config::from_cli_and_env()` so CLI flags from `clap` override env values
-- [ ] 2.4 Validate that `AGENTMEM_ROOT_DIR` exists, is a directory, and is canonicalisable
-- [ ] 2.5 Validate that `AGENTMEM_AGENTS_DIR` is a relative path with no traversal, or `.`/empty for "vault root", and join it onto the canonicalised root
-- [ ] 2.6 Parse `AGENTMEM_TRANSPORT` into a `Transport` enum (`Stdio`, `Http { bind: SocketAddr, bearer: Option<String> }`); when unset, default to `Http { bind: 127.0.0.1:8000, bearer: None }`
-- [ ] 2.7 Parse `AGENTMEM_TIMEZONE` into a `chrono_tz::Tz` value, defaulting to `UTC`, with a clear startup error on invalid IANA identifiers
-- [ ] 2.8 Parse `AGENTMEM_POLICY` into a `Policy` enum (`Scoped`, `Namespaced`, `Readonly`, `Readwrite`), defaulting to `Namespaced`
-- [ ] 2.9 Parse `AGENTMEM_HONOR_IGNORE_FILES` and `AGENTMEM_INCLUDE_HIDDEN` as strict booleans, defaulting to `true` and `false` respectively; invalid values exit non-zero with a clear stderr message
-- [ ] 2.10 Compute the active `EnvFilter` for `tracing_subscriber` from `AGENTMEM_LOG` (default `warn,agentmem=info`)
-- [ ] 2.11 Unit-test every scenario in `specs/configuration/spec.md`
+- [x] 2.1 Define a `Config` struct in `config.rs` matching every env var listed in `specs/configuration/spec.md`
+- [x] 2.2 Implement `Config::from_env()` returning a typed error per the configuration spec's fail-fast scenarios
+- [x] 2.3 Implement `Config::from_cli_and_env()` so CLI flags from `clap` override env values
+- [x] 2.4 Validate that `AGENTMEM_ROOT_DIR` exists, is a directory, and is canonicalisable
+- [x] 2.5 Validate that `AGENTMEM_AGENTS_DIR` is a relative path with no traversal, or `.`/empty for "vault root", and join it onto the canonicalised root
+- [x] 2.6 Parse `AGENTMEM_TRANSPORT` into a `Transport` enum (`Stdio`, `Http { bind: SocketAddr, bearer: Option<String> }`); when unset, default to `Http { bind: 127.0.0.1:8000, bearer: None }`
+- [x] 2.7 Parse `AGENTMEM_TIMEZONE` into a `chrono_tz::Tz` value, defaulting to `UTC`, with a clear startup error on invalid IANA identifiers
+- [x] 2.8 Parse `AGENTMEM_POLICY` into a `Policy` enum (`Scoped`, `Namespaced`, `Readonly`, `Readwrite`), defaulting to `Namespaced`
+- [x] 2.9 Parse `AGENTMEM_HONOR_IGNORE_FILES` and `AGENTMEM_INCLUDE_HIDDEN` as strict booleans, defaulting to `true` and `false` respectively; invalid values exit non-zero with a clear stderr message
+- [x] 2.10 Compute the active `EnvFilter` for `tracing_subscriber` from `AGENTMEM_LOG` (default `warn,agentmem=info`)
+- [x] 2.11 Unit-test every scenario in `specs/configuration/spec.md`
 
 ## 3. VFS template
 
