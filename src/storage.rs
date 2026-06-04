@@ -31,15 +31,18 @@ impl Cursor {
     }
 
     pub fn decode(cursor: &str) -> Result<u64, AgentmemError> {
-        let bytes = BASE64.decode(cursor).map_err(|_| AgentmemError::InvalidArgument {
-            message: "cursor is not valid".to_string(),
-        })?;
+        let bytes = BASE64
+            .decode(cursor)
+            .map_err(|_| AgentmemError::InvalidArgument {
+                message: "cursor is not valid".to_string(),
+            })?;
         let text = std::str::from_utf8(&bytes).map_err(|_| AgentmemError::InvalidArgument {
             message: "cursor is not valid".to_string(),
         })?;
-        text.parse::<u64>().map_err(|_| AgentmemError::InvalidArgument {
-            message: "cursor is not valid".to_string(),
-        })
+        text.parse::<u64>()
+            .map_err(|_| AgentmemError::InvalidArgument {
+                message: "cursor is not valid".to_string(),
+            })
     }
 }
 
@@ -86,7 +89,9 @@ impl Storage {
         physical: &PhysicalPath,
         content: &str,
     ) -> Result<usize, AgentmemError> {
-        self.with_target_lock(physical.as_path(), || self.write_atomic_locked(physical, content))
+        self.with_target_lock(physical.as_path(), || {
+            self.write_atomic_locked(physical, content)
+        })
     }
 
     /// Read the current contents (treating a missing file as absent), hand them
@@ -160,9 +165,11 @@ impl Storage {
         self.with_target_lock(physical.as_path(), || {
             match std::fs::remove_file(physical.as_path()) {
                 Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(AgentmemError::NotFound {
-                    virtual_path: self.display_path(physical),
-                }),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err(AgentmemError::NotFound {
+                        virtual_path: self.display_path(physical),
+                    })
+                }
                 Err(e) => Err(AgentmemError::io("deleting note", &e)),
             }
         })
@@ -412,7 +419,10 @@ mod tests {
     fn write_then_read_round_trips() {
         let tmp = TempDir::new().unwrap();
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
-        let physical = s.resolver.resolve("coder.alice", &vp("Agents/PERSONA.md")).unwrap();
+        let physical = s
+            .resolver
+            .resolve("coder.alice", &vp("Agents/PERSONA.md"))
+            .unwrap();
         let n = s.write_atomic(&physical, "hello").unwrap();
         assert_eq!(n, 5);
         assert_eq!(s.read(&physical).unwrap(), "hello");
@@ -422,8 +432,14 @@ mod tests {
     fn read_missing_is_not_found() {
         let tmp = TempDir::new().unwrap();
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
-        let physical = s.resolver.resolve("coder.alice", &vp("Agents/missing.md")).unwrap();
-        assert!(matches!(s.read(&physical), Err(AgentmemError::NotFound { .. })));
+        let physical = s
+            .resolver
+            .resolve("coder.alice", &vp("Agents/missing.md"))
+            .unwrap();
+        assert!(matches!(
+            s.read(&physical),
+            Err(AgentmemError::NotFound { .. })
+        ));
     }
 
     #[test]
@@ -442,7 +458,10 @@ mod tests {
     fn edit_unique_succeeds_missing_and_ambiguous_fail() {
         let tmp = TempDir::new().unwrap();
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
-        let physical = s.resolver.resolve("coder.alice", &vp("Agents/n.md")).unwrap();
+        let physical = s
+            .resolver
+            .resolve("coder.alice", &vp("Agents/n.md"))
+            .unwrap();
 
         s.write_atomic(&physical, "alpha beta gamma").unwrap();
         s.edit_search_replace(&physical, "beta", "BETA").unwrap();
@@ -464,11 +483,17 @@ mod tests {
     fn delete_removes_file_and_missing_is_not_found() {
         let tmp = TempDir::new().unwrap();
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
-        let physical = s.resolver.resolve("coder.alice", &vp("Agents/d.md")).unwrap();
+        let physical = s
+            .resolver
+            .resolve("coder.alice", &vp("Agents/d.md"))
+            .unwrap();
         s.write_atomic(&physical, "x").unwrap();
         s.delete(&physical).unwrap();
         assert!(!physical.as_path().exists());
-        assert!(matches!(s.delete(&physical), Err(AgentmemError::NotFound { .. })));
+        assert!(matches!(
+            s.delete(&physical),
+            Err(AgentmemError::NotFound { .. })
+        ));
     }
 
     #[test]
@@ -533,7 +558,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let s = Arc::new(storage(&tmp, "Agents", "<agent>.<user>", true, false));
         let physical = Arc::new(
-            s.resolver.resolve("coder.alice", &vp("Agents/diary/d.md")).unwrap(),
+            s.resolver
+                .resolve("coder.alice", &vp("Agents/diary/d.md"))
+                .unwrap(),
         );
 
         let mut handles = Vec::new();

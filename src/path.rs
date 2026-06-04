@@ -169,7 +169,7 @@ impl PathResolver {
     }
 
     /// The portion of an inside-agents virtual path beneath the agents folder.
-    fn agents_remainder<'a>(&self, vpath: &'a VirtualPath) -> Utf8PathBuf {
+    fn agents_remainder(&self, vpath: &VirtualPath) -> Utf8PathBuf {
         if self.agents_is_root() {
             vpath.0.clone()
         } else {
@@ -404,7 +404,11 @@ mod tests {
         let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
         let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
         let physical = r.resolve("coder.alice", &vp).unwrap();
-        assert!(physical.as_path().ends_with("Agents/coder.alice/tasks/plan.coder.alice.md"));
+        assert!(
+            physical
+                .as_path()
+                .ends_with("Agents/coder.alice/tasks/plan.coder.alice.md")
+        );
     }
 
     #[test]
@@ -413,7 +417,11 @@ mod tests {
         let r = resolver(tmp.path(), "Agents", "<agent>");
         let vp = VirtualPath::new("Agents/HEARTBEAT-STATE.md").unwrap();
         let physical = r.resolve("coder", &vp).unwrap();
-        assert!(physical.as_path().ends_with("Agents/coder/HEARTBEAT-STATE.coder.md"));
+        assert!(
+            physical
+                .as_path()
+                .ends_with("Agents/coder/HEARTBEAT-STATE.coder.md")
+        );
     }
 
     #[test]
@@ -423,9 +431,9 @@ mod tests {
         let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
         let physical = r.resolve("platform.coder.prod.alice", &vp).unwrap();
         assert!(
-            physical
-                .as_path()
-                .ends_with("Agents/platform.coder.prod.alice/tasks/plan.platform.coder.prod.alice.md")
+            physical.as_path().ends_with(
+                "Agents/platform.coder.prod.alice/tasks/plan.platform.coder.prod.alice.md"
+            )
         );
     }
 
@@ -445,7 +453,11 @@ mod tests {
         let vp = VirtualPath::new("tasks/plan.md").unwrap();
         assert_eq!(r.detect_region(&vp), Region::InsideAgentsFolder);
         let physical = r.resolve("coder.alice", &vp).unwrap();
-        assert!(physical.as_path().ends_with("coder.alice/tasks/plan.coder.alice.md"));
+        assert!(
+            physical
+                .as_path()
+                .ends_with("coder.alice/tasks/plan.coder.alice.md")
+        );
     }
 
     #[test]
