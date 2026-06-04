@@ -78,7 +78,11 @@ pub struct Config {
 
 /// CLI flags that mirror — and override — the environment variables.
 #[derive(Debug, Default, clap::Parser)]
-#[command(name = "agentmem", version, about = "MCP server for multi-tenant agent memory")]
+#[command(
+    name = "agentmem",
+    version,
+    about = "MCP server for multi-tenant agent memory"
+)]
 pub struct Cli {
     /// Vault root directory (overrides AGENTMEM_ROOT_DIR).
     #[arg(long)]
@@ -181,9 +185,9 @@ impl Config {
     /// Core builder over an arbitrary variable getter (used by tests too).
     fn build(get: &dyn Fn(&str) -> Option<String>) -> Result<Config, AgentmemError> {
         // --- root dir (required) ---
-        let root_raw = get(VAR_ROOT_DIR).filter(|s| !s.is_empty()).ok_or_else(|| {
-            config_err(format!("{VAR_ROOT_DIR} is required but was not set"))
-        })?;
+        let root_raw = get(VAR_ROOT_DIR)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| config_err(format!("{VAR_ROOT_DIR} is required but was not set")))?;
         let root_path = PathBuf::from(&root_raw);
         let metadata = std::fs::metadata(&root_path).map_err(|_| {
             config_err(format!(
@@ -267,7 +271,10 @@ impl Config {
         let transport = match &self.transport {
             Transport::Stdio => "stdio".to_string(),
             Transport::Http { bind, bearer } => {
-                format!("http bind={bind} bearer={}", if bearer.is_some() { "set" } else { "unset" })
+                format!(
+                    "http bind={bind} bearer={}",
+                    if bearer.is_some() { "set" } else { "unset" }
+                )
             }
         };
         format!(
@@ -298,8 +305,10 @@ impl Config {
 
     #[cfg(test)]
     fn from_pairs(pairs: &[(&str, &str)]) -> Result<Config, AgentmemError> {
-        let map: HashMap<String, String> =
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         Config::build(&|k| map.get(k).cloned())
     }
 }
@@ -405,8 +414,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("a-file");
         std::fs::write(&file, b"x").unwrap();
-        let err =
-            Config::from_pairs(&[(VAR_ROOT_DIR, file.to_str().unwrap())]).unwrap_err();
+        let err = Config::from_pairs(&[(VAR_ROOT_DIR, file.to_str().unwrap())]).unwrap_err();
         assert!(err.to_string().contains("not a directory"));
     }
 
@@ -546,10 +554,8 @@ mod tests {
             [(VAR_HTTP_BIND.to_string(), "127.0.0.1:1111".to_string())]
                 .into_iter()
                 .collect();
-        let cfg = Config::build(&|k| {
-            overrides.get(k).cloned().or_else(|| env.get(k).cloned())
-        })
-        .unwrap();
+        let cfg =
+            Config::build(&|k| overrides.get(k).cloned().or_else(|| env.get(k).cloned())).unwrap();
         match cfg.transport {
             Transport::Http { bind, .. } => assert_eq!(bind.to_string(), "0.0.0.0:9000"),
             _ => panic!("expected http"),

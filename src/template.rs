@@ -47,9 +47,7 @@ pub enum TemplateError {
     StrayBracket { segment: String },
     #[error("invalid character '{ch}' in literal segment '{segment}'")]
     InvalidLiteralChar { segment: String, ch: char },
-    #[error(
-        "invalid placeholder name '<{ident}>' (must match [A-Za-z_][A-Za-z0-9_]*)"
-    )]
+    #[error("invalid placeholder name '<{ident}>' (must match [A-Za-z_][A-Za-z0-9_]*)")]
     InvalidPlaceholderIdent { ident: String },
 }
 
@@ -76,11 +74,12 @@ impl Template {
             }
 
             if let Some(after) = part.strip_prefix('<') {
-                let ident = after
-                    .strip_suffix('>')
-                    .ok_or_else(|| TemplateError::UnclosedPlaceholder {
-                        segment: part.to_string(),
-                    })?;
+                let ident =
+                    after
+                        .strip_suffix('>')
+                        .ok_or_else(|| TemplateError::UnclosedPlaceholder {
+                            segment: part.to_string(),
+                        })?;
                 validate_ident(ident)?;
                 segments.push(Segment::Placeholder(ident.to_string()));
             } else if part.contains('<') || part.contains('>') {

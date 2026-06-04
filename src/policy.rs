@@ -68,14 +68,38 @@ impl Policy {
         use Policy::*;
         use Region::*;
         match (self, region) {
-            (Scoped, InsideAgentsFolder) => Permission { read: true, write: true },
-            (Scoped, OutsideAgentsFolder) => Permission { read: false, write: false },
-            (Namespaced, InsideAgentsFolder) => Permission { read: true, write: true },
-            (Namespaced, OutsideAgentsFolder) => Permission { read: true, write: false },
-            (Readonly, InsideAgentsFolder) => Permission { read: true, write: false },
-            (Readonly, OutsideAgentsFolder) => Permission { read: true, write: false },
-            (Readwrite, InsideAgentsFolder) => Permission { read: true, write: true },
-            (Readwrite, OutsideAgentsFolder) => Permission { read: true, write: true },
+            (Scoped, InsideAgentsFolder) => Permission {
+                read: true,
+                write: true,
+            },
+            (Scoped, OutsideAgentsFolder) => Permission {
+                read: false,
+                write: false,
+            },
+            (Namespaced, InsideAgentsFolder) => Permission {
+                read: true,
+                write: true,
+            },
+            (Namespaced, OutsideAgentsFolder) => Permission {
+                read: true,
+                write: false,
+            },
+            (Readonly, InsideAgentsFolder) => Permission {
+                read: true,
+                write: false,
+            },
+            (Readonly, OutsideAgentsFolder) => Permission {
+                read: true,
+                write: false,
+            },
+            (Readwrite, InsideAgentsFolder) => Permission {
+                read: true,
+                write: true,
+            },
+            (Readwrite, OutsideAgentsFolder) => Permission {
+                read: true,
+                write: true,
+            },
         }
     }
 

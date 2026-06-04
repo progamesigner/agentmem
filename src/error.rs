@@ -130,8 +130,7 @@ impl AgentmemError {
     pub fn into_tool_result(self) -> CallToolResult {
         let code = self.code().as_str();
         let message = self.to_string();
-        let mut result =
-            CallToolResult::error(vec![Content::text(message.clone())]);
+        let mut result = CallToolResult::error(vec![Content::text(message.clone())]);
         result.structured_content = Some(json!({ "code": code, "message": message }));
         result
     }
@@ -172,8 +171,14 @@ mod tests {
         assert_eq!(ErrorCode::WriteDenied.as_str(), "write_denied");
         assert_eq!(ErrorCode::MissingScope.as_str(), "missing_scope");
         assert_eq!(ErrorCode::NotFound.as_str(), "not_found");
-        assert_eq!(ErrorCode::EditSearchNotFound.as_str(), "edit_search_not_found");
-        assert_eq!(ErrorCode::EditSearchAmbiguous.as_str(), "edit_search_ambiguous");
+        assert_eq!(
+            ErrorCode::EditSearchNotFound.as_str(),
+            "edit_search_not_found"
+        );
+        assert_eq!(
+            ErrorCode::EditSearchAmbiguous.as_str(),
+            "edit_search_ambiguous"
+        );
         assert_eq!(ErrorCode::InvalidArgument.as_str(), "invalid_argument");
         assert_eq!(ErrorCode::Io.as_str(), "io");
         assert_eq!(ErrorCode::Config.as_str(), "config");
@@ -209,7 +214,12 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let structured = result.structured_content.unwrap();
         assert_eq!(structured["code"], "not_found");
-        assert!(structured["message"].as_str().unwrap().contains("PERSONA.md"));
+        assert!(
+            structured["message"]
+                .as_str()
+                .unwrap()
+                .contains("PERSONA.md")
+        );
     }
 
     /// The virtual path supplied by the client appears in the message; the
