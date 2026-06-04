@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod path;
 pub mod policy;
+pub mod storage;
 pub mod template;
 
 pub use error::{AgentmemError, ErrorCode};

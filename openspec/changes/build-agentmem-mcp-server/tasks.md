@@ -53,18 +53,18 @@
 
 ## 6. Storage layer
 
-- [ ] 6.1 Implement `Storage::read(physical) -> Result<String, StorageError>` returning UTF-8 contents and mapping IO errors to typed kinds (`NotFound`, `Io`)
-- [ ] 6.2 Implement `Storage::write_atomic(physical, content)` using `tempfile::NamedTempFile::new_in(parent)`, `write_all`, `as_file().sync_all()`, then `persist`
-- [ ] 6.3 Implement `Storage::edit_search_replace(physical, search, replace)` with uniqueness preconditions returning `EditSearchNotFound` or `EditSearchAmbiguous`
-- [ ] 6.4 Implement `Storage::delete(physical)` calling `std::fs::remove_file`; map missing target to `NotFound`; do NOT remove parent directories
-- [ ] 6.5 Implement a `Walker` wrapping `ignore::WalkBuilder` configured from `AGENTMEM_HONOR_IGNORE_FILES` and `AGENTMEM_INCLUDE_HIDDEN`; ensure the agents folder is always traversable even when it begins with `.`
-- [ ] 6.6 Implement `Storage::list_inside_agents_folder(scope, template, walker)` using the walker, applying suffix-stripping, and filtering files not owned by the scope
-- [ ] 6.7 Implement `Storage::list_outside_agents_folder(walker, vault_root, agents_root)` using the walker for the rest of the vault (when permitted by policy) and returning clean virtual paths
-- [ ] 6.8 Implement `Storage::is_visible(virtual_path)` reusing the walker's match logic so direct read / write / edit / delete can reject hidden or ignored paths with `path_not_permitted` before any IO
-- [ ] 6.9 Implement opaque pagination cursors: `Cursor::encode(offset: u64) -> String` (base64) and `Cursor::decode(&str) -> Result<u64, _>`; threaded through `Storage::list_*` functions
-- [ ] 6.10 Implement `Storage::mkdirs_for(physical)` to auto-create parent directories during writes (both regions)
-- [ ] 6.11 Add an in-process per-target advisory lock (e.g. `dashmap<PathBuf, Mutex<()>>`) covering concurrent writes from the same process; back it with `fs2::FileExt::try_lock_exclusive` on the target's parent if needed for cross-process safety
-- [ ] 6.12 Cover every `specs/vault-storage/spec.md` scenario with `assert_fs` integration tests, including the visibility-filter scenarios
+- [x] 6.1 Implement `Storage::read(physical) -> Result<String, StorageError>` returning UTF-8 contents and mapping IO errors to typed kinds (`NotFound`, `Io`)
+- [x] 6.2 Implement `Storage::write_atomic(physical, content)` using `tempfile::NamedTempFile::new_in(parent)`, `write_all`, `as_file().sync_all()`, then `persist`
+- [x] 6.3 Implement `Storage::edit_search_replace(physical, search, replace)` with uniqueness preconditions returning `EditSearchNotFound` or `EditSearchAmbiguous`
+- [x] 6.4 Implement `Storage::delete(physical)` calling `std::fs::remove_file`; map missing target to `NotFound`; do NOT remove parent directories
+- [x] 6.5 Implement a `Walker` wrapping `ignore::WalkBuilder` configured from `AGENTMEM_HONOR_IGNORE_FILES` and `AGENTMEM_INCLUDE_HIDDEN`; ensure the agents folder is always traversable even when it begins with `.`
+- [x] 6.6 Implement `Storage::list_inside_agents_folder(scope, template, walker)` using the walker, applying suffix-stripping, and filtering files not owned by the scope
+- [x] 6.7 Implement `Storage::list_outside_agents_folder(walker, vault_root, agents_root)` using the walker for the rest of the vault (when permitted by policy) and returning clean virtual paths
+- [x] 6.8 Implement `Storage::is_visible(virtual_path)` reusing the walker's match logic so direct read / write / edit / delete can reject hidden or ignored paths with `path_not_permitted` before any IO
+- [x] 6.9 Implement opaque pagination cursors: `Cursor::encode(offset: u64) -> String` (base64) and `Cursor::decode(&str) -> Result<u64, _>`; threaded through `Storage::list_*` functions
+- [x] 6.10 Implement `Storage::mkdirs_for(physical)` to auto-create parent directories during writes (both regions)
+- [x] 6.11 Add an in-process per-target advisory lock (e.g. `dashmap<PathBuf, Mutex<()>>`) covering concurrent writes from the same process; back it with `fs2::FileExt::try_lock_exclusive` on the target's parent if needed for cross-process safety
+- [x] 6.12 Cover every `specs/vault-storage/spec.md` scenario with `assert_fs` integration tests, including the visibility-filter scenarios
 - [ ] 6.13 Add a crash-safety test: simulate process exit between temp-write and rename (kill child process from parent) and assert the target file is unchanged
 
 ## 7. Error model
