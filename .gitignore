@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# Local, per-developer Claude Code settings — never commit.
+.claude/settings.local.json
