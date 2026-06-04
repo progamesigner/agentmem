@@ -3,7 +3,8 @@
   "permissions": {
     "allow": [
       "Bash(cargo *)",
-      "Bash(openspec *)"
+      "Bash(openspec *)",
+      "Bash(rustc *)"
     ]
   }
 }
