@@ -34,22 +34,22 @@
 
 ## 4. Path resolution
 
-- [ ] 4.1 Define `VirtualPath(Utf8PathBuf)` and `PhysicalPath(PathBuf)` newtypes with constructors that reject empty, absolute, or traversal-bearing inputs
-- [ ] 4.2 Implement `PathResolver::detect_region(virtual_path) -> Region` returning `InsideAgentsFolder | OutsideAgentsFolder` based on the resolved agents-folder path
-- [ ] 4.3 Implement `PathResolver::resolve(scope, virtual_path) -> PhysicalPath`:
+- [x] 4.1 Define `VirtualPath(Utf8PathBuf)` and `PhysicalPath(PathBuf)` newtypes with constructors that reject empty, absolute, or traversal-bearing inputs
+- [x] 4.2 Implement `PathResolver::detect_region(virtual_path) -> Region` returning `InsideAgentsFolder | OutsideAgentsFolder` based on the resolved agents-folder path
+- [x] 4.3 Implement `PathResolver::resolve(scope, virtual_path) -> PhysicalPath`:
   - inside the agents folder with non-empty template → append rendered suffix to filename stem AND insert rendered string as the first path segment under the agents folder
   - inside the agents folder with empty template → no suffix, no per-scope segment
   - outside the agents folder → no transformation
-- [ ] 4.4 Implement `PathResolver::strip_suffix(physical, scope) -> Option<VirtualPath>` for listing inside the agents folder; returns `None` when the file does not belong to the caller's scope
-- [ ] 4.5 Unit-test traversal vectors: `..`, absolute paths, embedded null bytes, percent-encoded segments, and symlink escapes (use `tempfile` to construct fixtures)
-- [ ] 4.6 Unit-test cross-scope unreachability: every input (legitimate or crafted) for scope A inside the agents folder resolves either to scope A's physical path or to `not_found` — never to scope B's file
+- [x] 4.4 Implement `PathResolver::strip_suffix(physical, scope) -> Option<VirtualPath>` for listing inside the agents folder; returns `None` when the file does not belong to the caller's scope
+- [x] 4.5 Unit-test traversal vectors: `..`, absolute paths, embedded null bytes, percent-encoded segments, and symlink escapes (use `tempfile` to construct fixtures)
+- [x] 4.6 Unit-test cross-scope unreachability: every input (legitimate or crafted) for scope A inside the agents folder resolves either to scope A's physical path or to `not_found` — never to scope B's file
 
 ## 5. Policy enforcement
 
-- [ ] 5.1 Define `Permission { read: bool, write: bool }` and `Policy::permission_for(region: Region) -> Permission` covering the four policies × two regions matrix from `specs/vault-storage/spec.md`
-- [ ] 5.2 Implement a `gate_read(policy, region) -> Result<(), PolicyError>` and `gate_write(policy, region) -> Result<(), PolicyError>` helpers that all tool handlers call before any I/O
-- [ ] 5.3 Implement `Policy::list_visible_regions(template_is_empty: bool) -> Vec<Region>` so `list_workspace_files` knows which regions to walk
-- [ ] 5.4 Unit-test every "Policy enforcement" scenario in `specs/vault-storage/spec.md`
+- [x] 5.1 Define `Permission { read: bool, write: bool }` and `Policy::permission_for(region: Region) -> Permission` covering the four policies × two regions matrix from `specs/vault-storage/spec.md`
+- [x] 5.2 Implement a `gate_read(policy, region) -> Result<(), PolicyError>` and `gate_write(policy, region) -> Result<(), PolicyError>` helpers that all tool handlers call before any I/O
+- [x] 5.3 Implement `Policy::list_visible_regions(template_is_empty: bool) -> Vec<Region>` so `list_workspace_files` knows which regions to walk
+- [x] 5.4 Unit-test every "Policy enforcement" scenario in `specs/vault-storage/spec.md`
 
 ## 6. Storage layer
 

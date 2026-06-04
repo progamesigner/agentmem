@@ -1,0 +1,525 @@
+//! Virtual ↔ physical path resolution, containment, and the own-scope suffix
+//! transform.
+//!
+//! ## Addressing model
+//!
+//! Virtual paths are **relative to the vault root**. A path is *inside the agents
+//! folder* when its leading component equals the configured agents-folder name
+//! (or always, when the agents folder is the vault root). Inside the agents
+//! folder, with a non-empty template, the resolver inserts the caller's rendered
+//! scope as the first directory segment beneath the agents folder AND appends it
+//! to the file stem — making another scope's file structurally unaddressable.
+//!
+//! The specs reference both root-relative (`Agents/topics/rust.md`,
+//! `Actions/release.md`) and bare (`PERSONA.md`) virtual paths. We resolve the
+//! inconsistency in favour of root-relative addressing; the ergonomic wrapper
+//! tools build their paths by prepending the agents-folder name, so an agent
+//! never has to spell the scope segment or suffix itself.
+
+use camino::{Utf8Path, Utf8PathBuf};
+
+use crate::error::AgentmemError;
+use crate::policy::Region;
+use crate::template::Template;
+
+/// A validated, vault-root-relative virtual path with no traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualPath(Utf8PathBuf);
+
+/// A resolved absolute path on the host filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalPath(std::path::PathBuf);
+
+impl VirtualPath {
+    /// Validate and normalise a client-supplied virtual path.
+    ///
+    /// Rejects empty input, embedded NUL bytes, absolute paths, and any `..`
+    /// component. Bare `.` components are dropped. The result is always relative
+    /// and traversal-free.
+    pub fn new(raw: &str) -> Result<VirtualPath, AgentmemError> {
+        if raw.is_empty() {
+            return Err(AgentmemError::InvalidArgument {
+                message: "path must not be empty".to_string(),
+            });
+        }
+        if raw.contains('\0') {
+            return Err(AgentmemError::InvalidArgument {
+                message: "path must not contain NUL bytes".to_string(),
+            });
+        }
+
+        let candidate = Utf8Path::new(raw);
+        if candidate.is_absolute() || raw.starts_with('/') || raw.starts_with('\\') {
+            return Err(AgentmemError::PathEscapesRoot {
+                virtual_path: raw.to_string(),
+            });
+        }
+
+        let mut normalised = Utf8PathBuf::new();
+        for component in candidate.components() {
+            use camino::Utf8Component::*;
+            match component {
+                CurDir => {}
+                Normal(seg) => normalised.push(seg),
+                ParentDir | RootDir | Prefix(_) => {
+                    return Err(AgentmemError::PathEscapesRoot {
+                        virtual_path: raw.to_string(),
+                    });
+                }
+            }
+        }
+
+        if normalised.as_str().is_empty() {
+            return Err(AgentmemError::InvalidArgument {
+                message: "path must name a file".to_string(),
+            });
+        }
+
+        Ok(VirtualPath(normalised))
+    }
+
+    /// Construct from already-trusted components (internal use, e.g. listing).
+    fn from_relative(path: Utf8PathBuf) -> VirtualPath {
+        VirtualPath(path)
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn as_path(&self) -> &Utf8Path {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VirtualPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0.as_str())
+    }
+}
+
+impl PhysicalPath {
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    pub fn into_path_buf(self) -> std::path::PathBuf {
+        self.0
+    }
+}
+
+impl AsRef<std::path::Path> for PhysicalPath {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+/// Resolves virtual paths to physical paths under a fixed vault root, agents
+/// folder, and template.
+#[derive(Debug, Clone)]
+pub struct PathResolver {
+    /// Canonical absolute vault root.
+    vault_root: std::path::PathBuf,
+    /// Agents folder relative to the root. Empty means "the agents folder is the
+    /// vault root".
+    agents_dir: Utf8PathBuf,
+    template: Template,
+}
+
+impl PathResolver {
+    pub fn new(
+        vault_root: std::path::PathBuf,
+        agents_dir: Utf8PathBuf,
+        template: Template,
+    ) -> PathResolver {
+        PathResolver {
+            vault_root,
+            agents_dir,
+            template,
+        }
+    }
+
+    pub fn vault_root(&self) -> &std::path::Path {
+        &self.vault_root
+    }
+
+    pub fn agents_dir(&self) -> &Utf8Path {
+        &self.agents_dir
+    }
+
+    pub fn template(&self) -> &Template {
+        &self.template
+    }
+
+    /// `true` when the agents folder is the vault root itself.
+    fn agents_is_root(&self) -> bool {
+        self.agents_dir.as_str().is_empty()
+    }
+
+    /// Classify a virtual path as inside or outside the agents folder.
+    pub fn detect_region(&self, vpath: &VirtualPath) -> Region {
+        if self.agents_is_root() {
+            return Region::InsideAgentsFolder;
+        }
+        if vpath.0.starts_with(&self.agents_dir) {
+            Region::InsideAgentsFolder
+        } else {
+            Region::OutsideAgentsFolder
+        }
+    }
+
+    /// The portion of an inside-agents virtual path beneath the agents folder.
+    fn agents_remainder<'a>(&self, vpath: &'a VirtualPath) -> Utf8PathBuf {
+        if self.agents_is_root() {
+            vpath.0.clone()
+        } else {
+            vpath
+                .0
+                .strip_prefix(&self.agents_dir)
+                .map(|p| p.to_owned())
+                .unwrap_or_else(|_| vpath.0.clone())
+        }
+    }
+
+    /// Resolve a virtual path to a physical path, applying the scope transform
+    /// inside the agents folder. Does not touch the filesystem beyond the
+    /// containment check.
+    ///
+    /// `rendered_scope` is the already-validated rendered suffix string (empty
+    /// when the template is empty).
+    pub fn resolve(
+        &self,
+        rendered_scope: &str,
+        vpath: &VirtualPath,
+    ) -> Result<PhysicalPath, AgentmemError> {
+        let region = self.detect_region(vpath);
+
+        let relative: Utf8PathBuf = match region {
+            Region::OutsideAgentsFolder => vpath.0.clone(),
+            Region::InsideAgentsFolder => {
+                let remainder = self.agents_remainder(vpath);
+                if self.template.is_empty() {
+                    // No per-scope segment, no suffix.
+                    self.join_agents(&remainder)
+                } else {
+                    let transformed = apply_scope_to_relative(&remainder, rendered_scope)
+                        .ok_or_else(|| AgentmemError::InvalidArgument {
+                            message: "path must name a file".to_string(),
+                        })?;
+                    // <agents_dir>/<scope>/<transformed remainder>
+                    let mut scoped = Utf8PathBuf::from(rendered_scope);
+                    scoped.push(transformed);
+                    self.join_agents(&scoped)
+                }
+            }
+        };
+
+        let physical = self.vault_root.join(relative.as_std_path());
+        self.assert_contained(&physical, vpath)?;
+        Ok(PhysicalPath(physical))
+    }
+
+    /// Join a path beneath the agents folder (or the root when agents IS root).
+    fn join_agents(&self, rest: &Utf8Path) -> Utf8PathBuf {
+        if self.agents_is_root() {
+            rest.to_owned()
+        } else {
+            self.agents_dir.join(rest)
+        }
+    }
+
+    /// Recover the clean (suffix-stripped, root-relative) virtual path for a
+    /// physical file inside the agents folder, or `None` if the file does not
+    /// belong to `rendered_scope`.
+    pub fn strip_suffix(
+        &self,
+        physical: &std::path::Path,
+        rendered_scope: &str,
+    ) -> Option<VirtualPath> {
+        let rel_std = physical.strip_prefix(&self.vault_root).ok()?;
+        let rel = Utf8Path::from_path(rel_std)?;
+
+        // Strip the agents-folder prefix to get the in-agents remainder.
+        let in_agents: &Utf8Path = if self.agents_is_root() {
+            rel
+        } else {
+            rel.strip_prefix(&self.agents_dir).ok()?
+        };
+
+        if self.template.is_empty() {
+            // No scope filtering: present the file at its root-relative path.
+            return Some(VirtualPath::from_relative(rel.to_owned()));
+        }
+
+        // First component must be the caller's scope segment.
+        let mut comps = in_agents.components();
+        let first = comps.next()?;
+        if first.as_str() != rendered_scope {
+            return None;
+        }
+        let beneath: Utf8PathBuf = comps.collect();
+        if beneath.as_str().is_empty() {
+            return None;
+        }
+
+        // The filename must carry the caller's suffix; strip it.
+        let dir = beneath.parent().map(|p| p.to_owned());
+        let filename = beneath.file_name()?;
+        let clean_name = strip_scope_from_filename(filename, rendered_scope)?;
+
+        let mut clean = Utf8PathBuf::new();
+        clean.push(&self.agents_dir);
+        if let Some(dir) = dir {
+            if !dir.as_str().is_empty() {
+                clean.push(dir);
+            }
+        }
+        clean.push(clean_name);
+        Some(VirtualPath::from_relative(clean))
+    }
+
+    /// Reject any physical path whose nearest existing ancestor canonicalises to
+    /// somewhere outside the vault root (catches `..` survivors and symlink
+    /// escapes).
+    fn assert_contained(
+        &self,
+        physical: &std::path::Path,
+        vpath: &VirtualPath,
+    ) -> Result<(), AgentmemError> {
+        let escapes = || AgentmemError::PathEscapesRoot {
+            virtual_path: vpath.as_str().to_string(),
+        };
+
+        // Canonicalise the deepest existing ancestor (the target may not exist
+        // yet). A symlink anywhere along the existing prefix is resolved here.
+        let mut probe = physical;
+        loop {
+            match probe.canonicalize() {
+                Ok(real) => {
+                    if real.starts_with(&self.vault_root) {
+                        return Ok(());
+                    } else {
+                        return Err(escapes());
+                    }
+                }
+                Err(_) => match probe.parent() {
+                    Some(parent) => probe = parent,
+                    None => return Err(escapes()),
+                },
+            }
+        }
+    }
+}
+
+/// Apply the scope suffix to the filename of a relative path, leaving directory
+/// components untouched. Returns `None` when the path has no filename.
+fn apply_scope_to_relative(relative: &Utf8Path, suffix: &str) -> Option<Utf8PathBuf> {
+    let filename = relative.file_name()?;
+    let new_name = apply_suffix_to_filename(filename, suffix);
+    let mut out = relative.parent().map(|p| p.to_owned()).unwrap_or_default();
+    out.push(new_name);
+    Some(out)
+}
+
+/// Insert `.<suffix>` between a filename's stem and its extension:
+/// `plan.md` + `coder.alice` → `plan.coder.alice.md`; `HEARTBEAT-STATE` +
+/// `coder` → `HEARTBEAT-STATE.coder`.
+fn apply_suffix_to_filename(filename: &str, suffix: &str) -> String {
+    let path = Utf8Path::new(filename);
+    match (path.file_stem(), path.extension()) {
+        (Some(stem), Some(ext)) => format!("{stem}.{suffix}.{ext}"),
+        _ => format!("{filename}.{suffix}"),
+    }
+}
+
+/// Inverse of [`apply_suffix_to_filename`]: recover the original filename if it
+/// carries `suffix`, else `None`.
+fn strip_scope_from_filename(filename: &str, suffix: &str) -> Option<String> {
+    let path = Utf8Path::new(filename);
+    let needle = format!(".{suffix}");
+    match path.extension() {
+        Some(ext) => {
+            let stem = path.file_stem()?;
+            let base = stem.strip_suffix(&needle)?;
+            if base.is_empty() {
+                return None;
+            }
+            Some(format!("{base}.{ext}"))
+        }
+        None => {
+            let base = filename.strip_suffix(&needle)?;
+            if base.is_empty() {
+                return None;
+            }
+            Some(base.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::prelude::*;
+
+    fn resolver(root: &std::path::Path, agents: &str, template: &str) -> PathResolver {
+        PathResolver::new(
+            root.canonicalize().unwrap(),
+            Utf8PathBuf::from(agents),
+            Template::parse(template).unwrap(),
+        )
+    }
+
+    #[test]
+    fn rejects_empty_absolute_and_traversal() {
+        assert!(matches!(
+            VirtualPath::new(""),
+            Err(AgentmemError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            VirtualPath::new("/etc/passwd"),
+            Err(AgentmemError::PathEscapesRoot { .. })
+        ));
+        assert!(matches!(
+            VirtualPath::new("../../etc/passwd"),
+            Err(AgentmemError::PathEscapesRoot { .. })
+        ));
+        assert!(matches!(
+            VirtualPath::new("a/../../b"),
+            Err(AgentmemError::PathEscapesRoot { .. })
+        ));
+        assert!(matches!(
+            VirtualPath::new("a\0b"),
+            Err(AgentmemError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn current_dir_components_are_dropped() {
+        assert_eq!(VirtualPath::new("./a/./b.md").unwrap().as_str(), "a/b.md");
+    }
+
+    #[test]
+    fn default_template_resolves_agent_and_user() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
+        let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
+        let physical = r.resolve("coder.alice", &vp).unwrap();
+        assert!(physical.as_path().ends_with("Agents/coder.alice/tasks/plan.coder.alice.md"));
+    }
+
+    #[test]
+    fn single_key_template_suffixes_extensionless_friendly() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>");
+        let vp = VirtualPath::new("Agents/HEARTBEAT-STATE.md").unwrap();
+        let physical = r.resolve("coder", &vp).unwrap();
+        assert!(physical.as_path().ends_with("Agents/coder/HEARTBEAT-STATE.coder.md"));
+    }
+
+    #[test]
+    fn multi_key_template() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<team>.<agent>.<env>.<user>");
+        let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
+        let physical = r.resolve("platform.coder.prod.alice", &vp).unwrap();
+        assert!(
+            physical
+                .as_path()
+                .ends_with("Agents/platform.coder.prod.alice/tasks/plan.platform.coder.prod.alice.md")
+        );
+    }
+
+    #[test]
+    fn empty_template_applies_no_suffix() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "");
+        let vp = VirtualPath::new("Agents/notes.md").unwrap();
+        let physical = r.resolve("", &vp).unwrap();
+        assert!(physical.as_path().ends_with("Agents/notes.md"));
+    }
+
+    #[test]
+    fn vault_root_as_agents_folder() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "", "<agent>.<user>");
+        let vp = VirtualPath::new("tasks/plan.md").unwrap();
+        assert_eq!(r.detect_region(&vp), Region::InsideAgentsFolder);
+        let physical = r.resolve("coder.alice", &vp).unwrap();
+        assert!(physical.as_path().ends_with("coder.alice/tasks/plan.coder.alice.md"));
+    }
+
+    #[test]
+    fn region_detection() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
+        assert_eq!(
+            r.detect_region(&VirtualPath::new("Agents/topics/rust.md").unwrap()),
+            Region::InsideAgentsFolder
+        );
+        assert_eq!(
+            r.detect_region(&VirtualPath::new("Actions/release.md").unwrap()),
+            Region::OutsideAgentsFolder
+        );
+    }
+
+    /// Symlink escape: a symlink inside the vault pointing outside must be refused.
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_is_rejected() {
+        let outside = assert_fs::TempDir::new().unwrap();
+        outside.child("secret.md").write_str("top secret").unwrap();
+
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let agents = tmp.child("Agents");
+        agents.create_dir_all().unwrap();
+        // Agents/escape -> <outside>
+        std::os::unix::fs::symlink(outside.path(), agents.child("escape").path()).unwrap();
+
+        let r = resolver(tmp.path(), "Agents", "");
+        let vp = VirtualPath::new("Agents/escape/secret.md").unwrap();
+        assert!(matches!(
+            r.resolve("", &vp),
+            Err(AgentmemError::PathEscapesRoot { .. })
+        ));
+    }
+
+    /// Cross-scope unreachability: a crafted path bearing another scope's suffix
+    /// still resolves under the caller's own scope, never to the other file.
+    #[test]
+    fn crafted_path_cannot_reach_other_scope() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
+        let vp = VirtualPath::new("Agents/tasks/plan.coder.bob.md").unwrap();
+        let physical = r.resolve("coder.alice", &vp).unwrap();
+        let s = physical.as_path().to_string_lossy();
+        // Always under the caller's own scope directory + suffix.
+        assert!(s.contains("Agents/coder.alice/"));
+        assert!(s.ends_with(".coder.alice.md"));
+        assert!(!s.contains("coder.bob/"));
+    }
+
+    #[test]
+    fn strip_suffix_recovers_clean_path_for_own_scope() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
+        let physical = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("Agents/coder.alice/tasks/plan.coder.alice.md");
+        let clean = r.strip_suffix(&physical, "coder.alice").unwrap();
+        assert_eq!(clean.as_str(), "Agents/tasks/plan.md");
+    }
+
+    #[test]
+    fn strip_suffix_rejects_other_scope() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
+        let physical = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("Agents/coder.bob/tasks/plan.coder.bob.md");
+        assert_eq!(r.strip_suffix(&physical, "coder.alice"), None);
+    }
+}
