@@ -1,0 +1,409 @@
+---
+source: tests/schema_snapshots.rs
+expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
+---
+{
+  "append_diary_entry": {
+    "description": "Append a timestamped section to today's diary file for the active scope.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "content": {
+          "description": "The content to write.",
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  "delete_memory_note": {
+    "description": "Delete a single memory note by its virtual path.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "The virtual path of the note, relative to the vault root.",
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "edit_memory_note": {
+    "description": "Replace the unique occurrence of a search string in a note and persist atomically.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "The virtual path of the note, relative to the vault root.",
+          "type": "string"
+        },
+        "replace_string": {
+          "description": "The replacement string.",
+          "type": "string"
+        },
+        "search_string": {
+          "description": "The exact string to replace. It must occur exactly once in the file.",
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "path",
+        "search_string",
+        "replace_string"
+      ],
+      "type": "object"
+    }
+  },
+  "evolve_core_persona": {
+    "description": "Atomically replace one foundational session file selected by the `which` parameter.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "content": {
+          "description": "The full new contents of the selected file.",
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "which": {
+          "description": "Which foundational file to replace.",
+          "enum": [
+            "persona",
+            "prompt",
+            "rules",
+            "user",
+            "tools"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "which",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  "list_memory_notes": {
+    "description": "List the virtual paths of memory notes visible to the given scope, with pagination.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "cursor": {
+          "default": null,
+          "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "default": null,
+          "description": "Maximum number of entries to return (default 200, maximum 1000).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path_prefix": {
+          "default": null,
+          "description": "Optional virtual-path prefix, relative to the agents folder, to filter by.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user"
+      ],
+      "type": "object"
+    }
+  },
+  "load_session_context": {
+    "description": "Read the five foundational session files (PERSONA, PROMPT, RULES, USER, TOOLS) in one call.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user"
+      ],
+      "type": "object"
+    }
+  },
+  "read_memory_note": {
+    "description": "Read the UTF-8 contents of a single memory note by its virtual path.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "The virtual path of the note, relative to the vault root.",
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "update_task_heartbeat": {
+    "description": "Atomically replace the scope's HEARTBEAT-STATE.md.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "content": {
+          "description": "The content to write.",
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  "write_memory_note": {
+    "description": "Atomically write the full contents of a memory note at the given virtual path.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "content": {
+          "description": "The full new contents of the note.",
+          "type": "string"
+        },
+        "env": {
+          "description": "Scope key 'env' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "The virtual path of the note, relative to the vault root.",
+          "type": "string"
+        },
+        "team": {
+          "description": "Scope key 'team' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "team",
+        "agent",
+        "env",
+        "user",
+        "path",
+        "content"
+      ],
+      "type": "object"
+    }
+  }
+}
