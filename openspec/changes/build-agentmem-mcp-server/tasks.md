@@ -24,13 +24,13 @@
 
 ## 3. VFS template
 
-- [ ] 3.1 Define a `Template { segments: Vec<Segment> }` type where `Segment` is `Literal(String) | Placeholder(String)`
-- [ ] 3.2 Implement `Template::parse(s: &str) -> Result<Template, TemplateError>` honouring the grammar in `design.md` D4; reject malformed brackets and invalid placeholder idents with structured errors
-- [ ] 3.3 Implement `Template::placeholders(&self) -> Vec<&str>` returning the ordered, de-duplicated list of placeholder idents (the required scope parameter names)
-- [ ] 3.4 Implement `Template::render(&self, scope: &BTreeMap<String, String>) -> Result<String, RenderError>` validating that scope keys exactly match the placeholder set and producing the dotted rendered string
-- [ ] 3.5 Implement `Template::is_empty(&self) -> bool` and ensure all downstream consumers (resolver, policy, list) treat empty templates as "no suffix, no own-scope filtering"
-- [ ] 3.6 Implement `Template::to_json_schema(&self) -> serde_json::Value` producing the scope-fields fragment that gets merged into each tool's input schema
-- [ ] 3.7 Unit-test every "VFS template resolution" scenario in `specs/vault-storage/spec.md`, plus malformed templates
+- [x] 3.1 Define a `Template { segments: Vec<Segment> }` type where `Segment` is `Literal(String) | Placeholder(String)`
+- [x] 3.2 Implement `Template::parse(s: &str) -> Result<Template, TemplateError>` honouring the grammar in `design.md` D4; reject malformed brackets and invalid placeholder idents with structured errors
+- [x] 3.3 Implement `Template::placeholders(&self) -> Vec<&str>` returning the ordered, de-duplicated list of placeholder idents (the required scope parameter names)
+- [x] 3.4 Implement `Template::render(&self, scope: &BTreeMap<String, String>) -> Result<String, RenderError>` validating that scope keys exactly match the placeholder set and producing the dotted rendered string
+- [x] 3.5 Implement `Template::is_empty(&self) -> bool` and ensure all downstream consumers (resolver, policy, list) treat empty templates as "no suffix, no own-scope filtering"
+- [x] 3.6 Implement `Template::to_json_schema(&self) -> serde_json::Value` producing the scope-fields fragment that gets merged into each tool's input schema
+- [x] 3.7 Unit-test every "VFS template resolution" scenario in `specs/vault-storage/spec.md`, plus malformed templates
 
 ## 4. Path resolution
 
@@ -69,9 +69,9 @@
 
 ## 7. Error model
 
-- [ ] 7.1 Define a top-level `AgentmemError` enum in `error.rs` with `thiserror` variants for every error code referenced in the specs (`path_escapes_root`, `path_not_permitted`, `write_denied`, `missing_scope`, `not_found`, `edit_search_not_found`, `edit_search_ambiguous`, `invalid_argument`, `io`, `config`, `transport`)
-- [ ] 7.2 Implement `impl From<AgentmemError> for rmcp::ErrorData` (or the equivalent MCP tool-error type) producing both a human-readable `text` and a structured `code`
-- [ ] 7.3 Unit-test that no variant leaks a raw OS error string into the MCP-facing message
+- [x] 7.1 Define a top-level `AgentmemError` enum in `error.rs` with `thiserror` variants for every error code referenced in the specs (`path_escapes_root`, `path_not_permitted`, `write_denied`, `missing_scope`, `not_found`, `edit_search_not_found`, `edit_search_ambiguous`, `invalid_argument`, `io`, `config`, `transport`)
+- [x] 7.2 Implement `impl From<AgentmemError> for rmcp::ErrorData` (or the equivalent MCP tool-error type) producing both a human-readable `text` and a structured `code`
+- [x] 7.3 Unit-test that no variant leaks a raw OS error string into the MCP-facing message
 
 ## 8. Tool schemas and handlers
 
