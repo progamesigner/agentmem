@@ -8,10 +8,8 @@
 //! resolved under the caller's own scope, the policy gate runs before any IO, and
 //! visibility filters reject hidden/ignored targets.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use chrono::Utc;
 use chrono_tz::Tz;
@@ -645,16 +643,8 @@ fn merge_schema(scheme: &Scheme, fields: JsonObject) -> JsonObject {
 }
 
 fn tool(name: &'static str, description: &'static str, schema: JsonObject) -> Tool {
-    Tool {
-        name: Cow::Borrowed(name),
-        title: None,
-        description: Some(Cow::Borrowed(description)),
-        input_schema: Arc::new(schema),
-        output_schema: None,
-        annotations: None,
-        icons: None,
-        meta: None,
-    }
+    // `Tool` is `#[non_exhaustive]`; use its constructor rather than a struct literal.
+    Tool::new(name, description, schema)
 }
 
 /// Assemble the full nine-tool list for a given scheme.

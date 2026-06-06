@@ -6,7 +6,7 @@
 //! only well-formed JSON-RPC frames: any stray log byte on stdout would corrupt
 //! the stream and break frame parsing (task 9.2).
 
-use rmcp::model::CallToolRequestParam;
+use rmcp::model::CallToolRequestParams;
 use rmcp::service::ServiceExt;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::json;
@@ -37,28 +37,32 @@ async fn stdio_initialize_list_and_roundtrip() {
 
     // write then read a memory note round-trip.
     service
-        .call_tool(CallToolRequestParam {
-            name: "write_memory_note".into(),
-            arguments: json!({
-                "agent": "coder", "user": "alice",
-                "path": "Agents/PERSONA.md", "content": "hello stdio"
-            })
-            .as_object()
-            .cloned(),
-        })
+        .call_tool(
+            CallToolRequestParams::new("write_memory_note").with_arguments(
+                json!({
+                    "agent": "coder", "user": "alice",
+                    "path": "Agents/PERSONA.md", "content": "hello stdio"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
         .await
         .unwrap();
 
     let read = service
-        .call_tool(CallToolRequestParam {
-            name: "read_memory_note".into(),
-            arguments: json!({
-                "agent": "coder", "user": "alice",
-                "path": "Agents/PERSONA.md"
-            })
-            .as_object()
-            .cloned(),
-        })
+        .call_tool(
+            CallToolRequestParams::new("read_memory_note").with_arguments(
+                json!({
+                    "agent": "coder", "user": "alice",
+                    "path": "Agents/PERSONA.md"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
         .await
         .unwrap();
 

@@ -6,7 +6,7 @@
 //! `prompts/get`, including the empty-vault case and a VFS-scheme variation.
 
 use rmcp::model::{
-    CallToolRequestParam, GetPromptRequestParam, PromptMessageContent, ReadResourceRequestParam,
+    CallToolRequestParams, GetPromptRequestParams, PromptMessageContent, ReadResourceRequestParams,
     ResourceContents,
 };
 use rmcp::service::ServiceExt;
@@ -53,13 +53,14 @@ async fn resource_template_and_read_render_context() {
 
     // Seed a foundational file for coder/alice.
     service
-        .call_tool(CallToolRequestParam {
-            name: "evolve_core_persona".into(),
-            arguments:
+        .call_tool(
+            CallToolRequestParams::new("evolve_core_persona").with_arguments(
                 json!({"agent":"coder","user":"alice","which":"persona","content":"PERSONA-BODY"})
                     .as_object()
-                    .cloned(),
-        })
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap();
 
@@ -76,9 +77,9 @@ async fn resource_template_and_read_render_context() {
 
     // resources/read for a populated scope renders the persona body.
     let read = service
-        .read_resource(ReadResourceRequestParam {
-            uri: "agentmem://session-context/coder/alice".to_string(),
-        })
+        .read_resource(ReadResourceRequestParams::new(
+            "agentmem://session-context/coder/alice",
+        ))
         .await
         .unwrap();
     let text = resource_text(&read);
@@ -87,9 +88,9 @@ async fn resource_template_and_read_render_context() {
 
     // Empty-vault scope still succeeds, with the missing sentinel.
     let read_empty = service
-        .read_resource(ReadResourceRequestParam {
-            uri: "agentmem://session-context/coder/bob".to_string(),
-        })
+        .read_resource(ReadResourceRequestParams::new(
+            "agentmem://session-context/coder/bob",
+        ))
         .await
         .unwrap();
     assert!(resource_text(&read_empty).contains("(not yet recorded"));
@@ -103,13 +104,14 @@ async fn prompt_lists_args_and_renders() {
     let service = serve(&tmp, "<agent>.<user>").await;
 
     service
-        .call_tool(CallToolRequestParam {
-            name: "evolve_core_persona".into(),
-            arguments:
+        .call_tool(
+            CallToolRequestParams::new("evolve_core_persona").with_arguments(
                 json!({"agent":"coder","user":"alice","which":"persona","content":"PROMPT-PERSONA"})
                     .as_object()
-                    .cloned(),
-        })
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap();
 
@@ -129,20 +131,24 @@ async fn prompt_lists_args_and_renders() {
 
     // prompts/get renders the context for the supplied scope.
     let got = service
-        .get_prompt(GetPromptRequestParam {
-            name: "session-context".to_string(),
-            arguments: json!({"agent":"coder","user":"alice"}).as_object().cloned(),
-        })
+        .get_prompt(
+            GetPromptRequestParams::new("session-context").with_arguments(
+                json!({"agent":"coder","user":"alice"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
         .await
         .unwrap();
     assert!(prompt_text(&got).contains("PROMPT-PERSONA"));
 
     // Missing required argument is rejected.
     let err = service
-        .get_prompt(GetPromptRequestParam {
-            name: "session-context".to_string(),
-            arguments: json!({"agent":"coder"}).as_object().cloned(),
-        })
+        .get_prompt(
+            GetPromptRequestParams::new("session-context")
+                .with_arguments(json!({"agent":"coder"}).as_object().unwrap().clone()),
+        )
         .await;
     assert!(err.is_err(), "missing scope arg should error");
 
@@ -175,9 +181,9 @@ async fn surfaces_follow_a_custom_scheme() {
 
     // A single-segment read resolves under the one-key scheme.
     let read = service
-        .read_resource(ReadResourceRequestParam {
-            uri: "agentmem://session-context/coder".to_string(),
-        })
+        .read_resource(ReadResourceRequestParams::new(
+            "agentmem://session-context/coder",
+        ))
         .await
         .unwrap();
     assert!(resource_text(&read).contains("# Session Context"));

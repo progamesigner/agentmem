@@ -2,7 +2,7 @@
 //!
 //! Mounts the `rmcp` Streamable HTTP service at `POST`/`GET`/`DELETE /mcp` behind
 //! an `axum` router that also serves a `GET /health` liveness route. When
-//! `AGENTMEM_HTTP_BEARER` is set, a `tower` middleware enforces a matching
+//! `AGENTMEM_HTTP_BEARER` is set, an `axum` middleware enforces a matching
 //! `Authorization: Bearer <token>` header on the `/mcp` route and returns HTTP 401
 //! otherwise; `/health` is always reachable.
 

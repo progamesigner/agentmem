@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use rmcp::ServerHandler;
 use rmcp::model::{
-    AnnotateAble, CallToolRequestParam, CallToolResult, GetPromptRequestParam, GetPromptResult,
-    Implementation, ListPromptsResult, ListResourceTemplatesResult, ListToolsResult,
-    PaginatedRequestParam, Prompt, PromptArgument, PromptMessage, PromptMessageRole,
-    ProtocolVersion, RawResourceTemplate, ReadResourceRequestParam, ReadResourceResult,
-    ResourceContents, ServerCapabilities, ServerInfo,
+    AnnotateAble, CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
+    ListPromptsResult, ListResourceTemplatesResult, ListToolsResult, PaginatedRequestParams,
+    Prompt, PromptArgument, PromptMessage, PromptMessageRole, RawResourceTemplate,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+    ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, model::JsonObject};
@@ -141,27 +141,28 @@ fn to_mcp_error(err: AgentmemError) -> McpError {
 
 impl ServerHandler for AgentmemServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::default(),
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_prompts()
-                .build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "Durable, namespaced markdown memory for agents. Every tool call must \
-                 carry the scope keys defined by the server's VFS scheme; paths are \
-                 virtual and relative to the vault root. The `session-context` resource \
-                 and prompt render the per-scope bootstrap."
-                    .to_string(),
-            ),
-        }
+        // `ServerInfo` is `#[non_exhaustive]`, so it cannot be built with a struct
+        // expression here; start from its `Default` (which already sets the protocol
+        // version and `Implementation::from_build_env()`) and override the rest.
+        let mut info = ServerInfo::default();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_prompts()
+            .build();
+        info.instructions = Some(
+            "Durable, namespaced markdown memory for agents. Every tool call must \
+             carry the scope keys defined by the server's VFS scheme; paths are \
+             virtual and relative to the vault root. The `session-context` resource \
+             and prompt render the per-scope bootstrap."
+                .to_string(),
+        );
+        info
     }
 
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         Ok(ListToolsResult::with_all_items(self.toolbox.list_tools()))
@@ -169,7 +170,7 @@ impl ServerHandler for AgentmemServer {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let args: JsonObject = request.arguments.unwrap_or_default();
@@ -185,7 +186,7 @@ impl ServerHandler for AgentmemServer {
 
     async fn list_resource_templates(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
         let template = RawResourceTemplate {
@@ -198,6 +199,7 @@ impl ServerHandler for AgentmemServer {
                     .to_string(),
             ),
             mime_type: Some("text/markdown".to_string()),
+            icons: None,
         }
         .no_annotation();
         Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
@@ -205,7 +207,7 @@ impl ServerHandler for AgentmemServer {
 
     async fn read_resource(
         &self,
-        request: ReadResourceRequestParam,
+        request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         let scope = self.scope_from_uri(&request.uri)?;
@@ -213,25 +215,26 @@ impl ServerHandler for AgentmemServer {
             .toolbox
             .render_session_context(&scope)
             .map_err(to_mcp_error)?;
-        Ok(ReadResourceResult {
-            contents: vec![ResourceContents::text(sc.rendered, request.uri)],
-        })
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            sc.rendered,
+            request.uri,
+        )]))
     }
 
     async fn list_prompts(
         &self,
-        _request: Option<PaginatedRequestParam>,
+        _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
         let arguments: Vec<PromptArgument> = self
             .toolbox
             .scheme_placeholders()
             .into_iter()
-            .map(|key| PromptArgument {
-                description: Some(format!("Scope key '{key}' identifying the caller.")),
-                name: key,
-                title: None,
-                required: Some(true),
+            .map(|key| {
+                let description = format!("Scope key '{key}' identifying the caller.");
+                PromptArgument::new(key)
+                    .with_description(description)
+                    .with_required(true)
             })
             .collect();
         let prompt = Prompt::new(
@@ -244,7 +247,7 @@ impl ServerHandler for AgentmemServer {
 
     async fn get_prompt(
         &self,
-        request: GetPromptRequestParam,
+        request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
         if request.name != SESSION_CONTEXT_NAME {
@@ -258,12 +261,10 @@ impl ServerHandler for AgentmemServer {
             .toolbox
             .render_session_context(&scope)
             .map_err(to_mcp_error)?;
-        Ok(GetPromptResult {
-            description: Some("Session-context bootstrap.".to_string()),
-            messages: vec![PromptMessage::new_text(
-                PromptMessageRole::User,
-                sc.rendered,
-            )],
-        })
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+            PromptMessageRole::User,
+            sc.rendered,
+        )])
+        .with_description("Session-context bootstrap."))
     }
 }
