@@ -8,7 +8,7 @@ The system SHALL be configured exclusively via environment variables. CLI flags 
 
 #### Scenario: Env vars are read at startup
 - **WHEN** the server is launched
-- **THEN** it reads `AGENTMEM_ROOT_DIR`, `AGENTMEM_AGENTS_DIR`, `AGENTMEM_VFS_TEMPLATE`, `AGENTMEM_POLICY`, `AGENTMEM_TRANSPORT`, `AGENTMEM_HTTP_BIND`, `AGENTMEM_HTTP_BEARER`, `AGENTMEM_TIMEZONE`, `AGENTMEM_HONOR_IGNORE_FILES`, `AGENTMEM_INCLUDE_HIDDEN`, and `AGENTMEM_LOG` from the process environment
+- **THEN** it reads `AGENTMEM_ROOT_DIR`, `AGENTMEM_AGENTS_DIR`, `AGENTMEM_VFS_SCHEME`, `AGENTMEM_POLICY`, `AGENTMEM_TRANSPORT`, `AGENTMEM_HTTP_BIND`, `AGENTMEM_HTTP_BEARER`, `AGENTMEM_TIMEZONE`, `AGENTMEM_HONOR_IGNORE_FILES`, `AGENTMEM_INCLUDE_HIDDEN`, and `AGENTMEM_LOG` from the process environment
 
 #### Scenario: CLI flag overrides env var
 - **WHEN** the server is launched with `--http-bind 0.0.0.0:9000` and `AGENTMEM_HTTP_BIND` is also set
@@ -27,7 +27,7 @@ The system SHALL require `AGENTMEM_ROOT_DIR` to be present and valid at startup,
 
 #### Scenario: All other variables have defaults
 - **WHEN** only `AGENTMEM_ROOT_DIR` is set and every other variable is unset
-- **THEN** the server starts successfully with: agents folder `Agents`, template `<agent>.<user>`, policy `namespaced`, transport `http`, bind `127.0.0.1:8000`, timezone `UTC`, ignore files honoured, hidden entries excluded
+- **THEN** the server starts successfully with: agents folder `Agents`, scheme `<agent>.<user>`, policy `namespaced`, transport `http`, bind `127.0.0.1:8000`, timezone `UTC`, ignore files honoured, hidden entries excluded
 
 ### Requirement: Agents folder configuration
 The system SHALL honour `AGENTMEM_AGENTS_DIR` as the relative folder name under the vault root that delimits the scoped/suffixed region. The default value SHALL be `Agents`. A value of `.` or the empty string SHALL be interpreted as "the agents folder IS the vault root".
@@ -48,31 +48,31 @@ The system SHALL honour `AGENTMEM_AGENTS_DIR` as the relative folder name under 
 - **WHEN** `AGENTMEM_AGENTS_DIR=../escape`
 - **THEN** the process exits non-zero with a stderr message naming the variable and the offending value
 
-### Requirement: VFS suffix template
-The system SHALL honour `AGENTMEM_VFS_TEMPLATE` as a dotted template string composed of literal segments and `<ident>` placeholders. The default value SHALL be `<agent>.<user>`. The template's placeholders define the required scope parameters on every tool call.
+### Requirement: VFS scheme
+The system SHALL honour `AGENTMEM_VFS_SCHEME` as a dotted scheme string composed of literal segments and `<ident>` placeholders. The default value SHALL be `<agent>.<user>`. The scheme's placeholders define the required scope parameters on every tool call.
 
-#### Scenario: Default template requires agent and user
-- **WHEN** `AGENTMEM_VFS_TEMPLATE` is unset
+#### Scenario: Default scheme requires agent and user
+- **WHEN** `AGENTMEM_VFS_SCHEME` is unset
 - **THEN** every tool's input schema includes required string fields `agent` and `user`
 
-#### Scenario: Single-key template
-- **WHEN** `AGENTMEM_VFS_TEMPLATE=<agent>`
+#### Scenario: Single-key scheme
+- **WHEN** `AGENTMEM_VFS_SCHEME=<agent>`
 - **THEN** every tool's input schema includes a required string field `agent` and no `user` field
 
-#### Scenario: Empty template disables suffixing
-- **WHEN** `AGENTMEM_VFS_TEMPLATE=` (empty string)
+#### Scenario: Empty scheme disables suffixing
+- **WHEN** `AGENTMEM_VFS_SCHEME=` (empty string)
 - **THEN** tool input schemas include no scope fields, no VFS suffix is applied, and no own-scope filtering is performed inside the agents folder
 
-#### Scenario: Custom multi-key template
-- **WHEN** `AGENTMEM_VFS_TEMPLATE=<team>.<agent>.<env>.<user>`
+#### Scenario: Custom multi-key scheme
+- **WHEN** `AGENTMEM_VFS_SCHEME=<team>.<agent>.<env>.<user>`
 - **THEN** every tool's input schema includes four required string fields `team`, `agent`, `env`, `user`; the rendered suffix for `{team:"platform", agent:"coder", env:"prod", user:"alice"}` is `platform.coder.prod.alice`
 
-#### Scenario: Literal segments in template
-- **WHEN** `AGENTMEM_VFS_TEMPLATE=v1.<agent>.<user>`
+#### Scenario: Literal segments in scheme
+- **WHEN** `AGENTMEM_VFS_SCHEME=v1.<agent>.<user>`
 - **THEN** the rendered suffix for `{agent:"coder", user:"alice"}` is `v1.coder.alice` and tool schemas require only `agent` and `user`
 
-#### Scenario: Malformed template
-- **WHEN** `AGENTMEM_VFS_TEMPLATE=<agent` (unclosed bracket) or contains characters outside the grammar
+#### Scenario: Malformed scheme
+- **WHEN** `AGENTMEM_VFS_SCHEME=<agent` (unclosed bracket) or contains characters outside the grammar
 - **THEN** the process exits non-zero with a stderr message naming the variable and pointing at the offending character
 
 #### Scenario: Invalid placeholder name
