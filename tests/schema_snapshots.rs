@@ -23,7 +23,12 @@ fn schemas_for(scheme: &str) -> Value {
         Scheme::parse(scheme).unwrap(),
     );
     let storage = Storage::new(resolver, true, false);
-    let toolbox = Toolbox::new(storage, Policy::Namespaced, Tz::UTC);
+    let toolbox = Toolbox::new(
+        storage,
+        Policy::Namespaced,
+        Tz::UTC,
+        tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+    );
 
     let mut map = serde_json::Map::new();
     for tool in toolbox.list_tools() {

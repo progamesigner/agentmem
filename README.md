@@ -54,6 +54,7 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_ROOT_DIR` | *(required)* | Absolute path to the vault root. Must exist, be a directory, and be canonicalisable. |
 | `AGENTMEM_AGENTS_DIR` | `Agents` | Agents folder relative to the root. `.` or empty means the vault root itself is the agents folder. Must be relative with no traversal. |
 | `AGENTMEM_VFS_SCHEME` | `<agent>.<user>` | VFS suffix scheme. Each `<ident>` becomes a required scope parameter on every tool call. Empty string disables suffixing. |
+| `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` | `<root>/AGENT_SESSION_CONTEXT.md` | Path to the global session-context template (see [Session context](#session-context)). Relative paths resolve against the vault root. Need not exist — falls back to the compiled-in default. |
 | `AGENTMEM_POLICY` | `namespaced` | One of `scoped`, `namespaced`, `readonly`, `readwrite` (see [Policies](#policies)). |
 | `AGENTMEM_TRANSPORT` | `http` | `http` or `stdio`. |
 | `AGENTMEM_HTTP_BIND` | `127.0.0.1:8000` | HTTP bind address (http transport only). |
@@ -105,13 +106,40 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 | `write_memory_note` | Atomic full-file write; returns the byte count. |
 | `edit_memory_note` | Atomic search/replace; the search string must occur exactly once. |
 | `delete_memory_note` | Delete a single file (never directories). |
-| `load_session_context` | Read `PERSONA`/`PROMPT`/`RULES`/`USER`/`TOOLS` `.md` in one call. |
+| `load_session_context` | Render the scope's session-context (see [Session context](#session-context)); returns `{ rendered, missing }`. |
 | `evolve_core_persona` | Atomic write to one of those five, selected by `which`. |
 | `update_task_heartbeat` | Atomic write to `HEARTBEAT-STATE.md`. |
 | `append_diary_entry` | Append a timestamped section to `diary/<YYYY-MM-DD>.md`. |
 
 Every tool's input schema includes the scope parameters derived from the active
 scheme; introspect them via the standard MCP `tools/list` call.
+
+## Session context
+
+A **session-context template** weaves the five foundational files
+(`PERSONA`/`PROMPT`/`RULES`/`USER`/`TOOLS`) together with operator prose and an
+auto-generated memory-tools guide into a single rendered bootstrap. It is an
+ordinary markdown document with `{{…}}` placeholders:
+
+- `{{files.persona}}`, `{{files.prompt}}`, `{{files.rules}}`, `{{files.user}}`, `{{files.tools}}` — the foundational file contents (a missing file renders a sentinel)
+- `{{scope.<key>}}` — a scope value (e.g. `{{scope.agent}}`); `<key>` is any scheme placeholder
+- `{{tools_guide}}` — the server-generated memory-tools guide
+
+The active template is resolved per request, first hit wins:
+
+1. a per-scope `AGENT_SESSION_CONTEXT.md` inside the agents folder (suffix-resolved like any scoped file)
+2. the global file at `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` (default `<root>/AGENT_SESSION_CONTEXT.md`)
+3. a compiled-in default
+
+Nothing errors on absence — a fresh vault renders an instructions-only bootstrap.
+Unknown `{{…}}` tokens are left literal. The same rendered output is exposed
+through three surfaces:
+
+| Surface | MCP shape | For |
+|---|---|---|
+| `load_session_context` tool | `{ rendered, missing }` | the model pulling its own context mid-session |
+| `session-context` resource | `agentmem://session-context/{…}` (params follow the scheme) | client auto-attach |
+| `session-context` prompt | required args follow the scheme | user slash-command |
 
 ## Policies
 

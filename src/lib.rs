@@ -9,8 +9,10 @@ pub mod mcp;
 pub mod path;
 pub mod policy;
 pub mod scheme;
+pub mod session_context;
 pub mod storage;
 pub mod telemetry;
+pub mod template;
 pub mod tools;
 pub mod transport;
 

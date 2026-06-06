@@ -20,6 +20,8 @@ use crate::scheme::Scheme;
 pub const DEFAULT_AGENTS_DIR: &str = "Agents";
 /// The default VFS suffix scheme.
 pub const DEFAULT_SCHEME: &str = "<agent>.<user>";
+/// The default session-context template filename, relative to the vault root.
+pub const DEFAULT_SESSION_CONTEXT_FILE: &str = "AGENT_SESSION_CONTEXT.md";
 /// The default HTTP bind address.
 pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8000";
 /// The default tracing filter directive.
@@ -28,6 +30,7 @@ pub const DEFAULT_LOG_FILTER: &str = "warn,agentmem=info";
 const VAR_ROOT_DIR: &str = "AGENTMEM_ROOT_DIR";
 const VAR_AGENTS_DIR: &str = "AGENTMEM_AGENTS_DIR";
 const VAR_SCHEME: &str = "AGENTMEM_VFS_SCHEME";
+const VAR_SESSION_CONTEXT_TEMPLATE_FILE: &str = "AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE";
 const VAR_POLICY: &str = "AGENTMEM_POLICY";
 const VAR_TRANSPORT: &str = "AGENTMEM_TRANSPORT";
 const VAR_HTTP_BIND: &str = "AGENTMEM_HTTP_BIND";
@@ -67,6 +70,8 @@ pub struct Config {
     /// vault root".
     pub agents_dir: Utf8PathBuf,
     pub scheme: Scheme,
+    /// Absolute path to the global session-context template file (may not exist).
+    pub session_context_template_file: PathBuf,
     pub policy: Policy,
     pub transport: Transport,
     pub timezone: Tz,
@@ -93,6 +98,9 @@ pub struct Cli {
     /// VFS suffix scheme (overrides AGENTMEM_VFS_SCHEME).
     #[arg(long)]
     pub vfs_scheme: Option<String>,
+    /// Global session-context template file (overrides AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE).
+    #[arg(long)]
+    pub session_context_template_file: Option<PathBuf>,
     /// Policy: scoped|namespaced|readonly|readwrite (overrides AGENTMEM_POLICY).
     #[arg(long)]
     pub policy: Option<String>,
@@ -134,6 +142,12 @@ impl Cli {
         }
         if let Some(v) = &self.vfs_scheme {
             m.insert(VAR_SCHEME, v.clone());
+        }
+        if let Some(v) = &self.session_context_template_file {
+            m.insert(
+                VAR_SESSION_CONTEXT_TEMPLATE_FILE,
+                v.to_string_lossy().into_owned(),
+            );
         }
         if let Some(v) = &self.policy {
             m.insert(VAR_POLICY, v.clone());
@@ -215,6 +229,22 @@ impl Config {
             config_err(format!("{VAR_SCHEME} is invalid ({scheme_raw:?}): {e}"))
         })?;
 
+        // --- session-context template file ---
+        // A relative path is resolved against the vault root; the default is
+        // `<root>/AGENT_SESSION_CONTEXT.md`. The file need not exist.
+        let session_context_template_file =
+            match get(VAR_SESSION_CONTEXT_TEMPLATE_FILE).filter(|s| !s.is_empty()) {
+                Some(raw) => {
+                    let p = PathBuf::from(raw);
+                    if p.is_absolute() {
+                        p
+                    } else {
+                        root_dir.join(p)
+                    }
+                }
+                None => root_dir.join(DEFAULT_SESSION_CONTEXT_FILE),
+            };
+
         // --- policy ---
         let policy_raw = get(VAR_POLICY).unwrap_or_else(|| "namespaced".to_string());
         let policy = Policy::parse(&policy_raw).ok_or_else(|| {
@@ -248,6 +278,7 @@ impl Config {
             root_dir,
             agents_dir,
             scheme,
+            session_context_template_file,
             policy,
             transport,
             timezone,
@@ -281,6 +312,7 @@ impl Config {
             "root_dir = {root}\n\
              agents_dir = {agents}\n\
              scheme = {scheme:?}\n\
+             session_context_template_file = {sctf}\n\
              policy = {policy:?}\n\
              transport = {transport}\n\
              timezone = {tz}\n\
@@ -294,6 +326,7 @@ impl Config {
                 self.agents_dir.as_str()
             },
             scheme = self.scheme,
+            sctf = self.session_context_template_file.display(),
             policy = self.policy,
             transport = transport,
             tz = self.timezone,
@@ -436,6 +469,37 @@ mod tests {
         assert!(cfg.honor_ignore_files);
         assert!(!cfg.include_hidden);
         assert_eq!(cfg.log_filter, DEFAULT_LOG_FILTER);
+    }
+
+    #[test]
+    fn session_context_template_file_default_and_override() {
+        let tmp = TempDir::new().unwrap();
+        // Default: <root>/AGENT_SESSION_CONTEXT.md
+        let cfg = build(with_root(&tmp, &[])).unwrap();
+        assert_eq!(
+            cfg.session_context_template_file,
+            tmp.path().canonicalize().unwrap().join("AGENT_SESSION_CONTEXT.md")
+        );
+        // Relative override resolves against the vault root.
+        let cfg = build(with_root(
+            &tmp,
+            &[(VAR_SESSION_CONTEXT_TEMPLATE_FILE, "custom/bootstrap.md")],
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.session_context_template_file,
+            tmp.path().canonicalize().unwrap().join("custom/bootstrap.md")
+        );
+        // Absolute override is used as-is.
+        let cfg = build(with_root(
+            &tmp,
+            &[(VAR_SESSION_CONTEXT_TEMPLATE_FILE, "/etc/agentmem/bootstrap.md")],
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.session_context_template_file,
+            PathBuf::from("/etc/agentmem/bootstrap.md")
+        );
     }
 
     #[test]

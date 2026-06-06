@@ -24,7 +24,12 @@ fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox
         Scheme::parse(scheme).unwrap(),
     );
     let storage = Storage::new(resolver, true, false);
-    Toolbox::new(storage, policy, Tz::UTC)
+    Toolbox::new(
+        storage,
+        policy,
+        Tz::UTC,
+        tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+    )
 }
 
 /// Default toolbox: `Agents` folder, `<agent>.<user>` scheme, namespaced.
@@ -607,8 +612,10 @@ fn load_session_context_all_present() {
         "load_session_context",
         json!({"agent":"coder","user":"alice"}),
     ));
-    assert_eq!(body["persona"], "PERSONA.md");
-    assert_eq!(body["tools"], "TOOLS.md");
+    let rendered = body["rendered"].as_str().unwrap();
+    // Each foundational file's contents are woven into the rendered output.
+    assert!(rendered.contains("PERSONA.md"));
+    assert!(rendered.contains("TOOLS.md"));
     assert_eq!(body["missing"].as_array().unwrap().len(), 0);
 }
 
@@ -633,8 +640,10 @@ fn load_session_context_some_missing() {
         "load_session_context",
         json!({"agent":"coder","user":"alice"}),
     ));
-    assert_eq!(body["persona"], "p");
-    assert!(body["prompt"].is_null());
+    let rendered = body["rendered"].as_str().unwrap();
+    // Present file is substituted; absent ones show the missing sentinel.
+    assert!(rendered.contains('p'));
+    assert!(rendered.contains("(not yet recorded"));
     let missing: Vec<&str> = body["missing"]
         .as_array()
         .unwrap()

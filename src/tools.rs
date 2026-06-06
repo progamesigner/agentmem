@@ -10,6 +10,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -30,16 +31,6 @@ use crate::scheme::Scheme;
 const DEFAULT_LIMIT: u64 = 200;
 /// The maximum permitted page size.
 const MAX_LIMIT: u64 = 1000;
-
-/// The five foundational session files, paired with the `which` enum value that
-/// selects them and the lowercase field name used in tool responses.
-const FOUNDATIONAL: &[(&str, &str, &str)] = &[
-    ("persona", "PERSONA.md", "persona"),
-    ("prompt", "PROMPT.md", "prompt"),
-    ("rules", "RULES.md", "rules"),
-    ("user", "USER.md", "user"),
-    ("tools", "TOOLS.md", "tools"),
-];
 
 /// The set of tool names this server exposes, in advertised order.
 pub const TOOL_NAMES: &[&str] = &[
@@ -136,12 +127,19 @@ pub struct Toolbox {
     policy: Policy,
     timezone: Tz,
     tools: Vec<Tool>,
+    /// Absolute path to the global session-context template file (may not exist).
+    session_context_template_file: PathBuf,
 }
 
 impl Toolbox {
     /// Build the toolbox and precompute every tool's input schema for the active
     /// scheme.
-    pub fn new(storage: Storage, policy: Policy, timezone: Tz) -> Toolbox {
+    pub fn new(
+        storage: Storage,
+        policy: Policy,
+        timezone: Tz,
+        session_context_template_file: PathBuf,
+    ) -> Toolbox {
         let scheme = storage.resolver().scheme().clone();
         let tools = build_tools(&scheme);
         Toolbox {
@@ -149,6 +147,7 @@ impl Toolbox {
             policy,
             timezone,
             tools,
+            session_context_template_file,
         }
     }
 
@@ -186,15 +185,15 @@ impl Toolbox {
         self.storage.resolver().scheme()
     }
 
-    /// Extract and render the scope suffix from the arguments, and reject any
+    /// Extract and validate the scope keys from the arguments, rejecting any
     /// argument key that is neither a scope placeholder nor a known tool field.
-    fn resolve_scope(
+    /// Returns the validated scope map (placeholder ident → value).
+    fn scope_map(
         &self,
         args: &JsonObject,
         tool_fields: &[&str],
-    ) -> Result<String, AgentmemError> {
-        let scheme = self.scheme();
-        let placeholders = scheme.placeholders();
+    ) -> Result<BTreeMap<String, String>, AgentmemError> {
+        let placeholders = self.scheme().placeholders();
 
         let mut scope: BTreeMap<String, String> = BTreeMap::new();
         for ph in &placeholders {
@@ -230,11 +229,70 @@ impl Toolbox {
             }
         }
 
-        scheme
+        Ok(scope)
+    }
+
+    /// Extract, validate, and render the scope suffix from the arguments.
+    fn resolve_scope(
+        &self,
+        args: &JsonObject,
+        tool_fields: &[&str],
+    ) -> Result<String, AgentmemError> {
+        let scope = self.scope_map(args, tool_fields)?;
+        self.scheme()
             .render(&scope)
             .map_err(|e| AgentmemError::InvalidArgument {
                 message: e.to_string(),
             })
+    }
+
+    /// The scheme's placeholder idents, in order — the scope keys every surface
+    /// (tool, resource, prompt) requires. Used by the MCP server to derive the
+    /// resource URI parameters and the prompt arguments.
+    pub fn scheme_placeholders(&self) -> Vec<String> {
+        self.scheme()
+            .placeholders()
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
+    /// Render the session-context for a pre-built scope map (used by the resource
+    /// and prompt surfaces). Validates that `scope` contains exactly the scheme's
+    /// placeholder keys before rendering.
+    pub fn render_session_context(
+        &self,
+        scope: &BTreeMap<String, String>,
+    ) -> Result<crate::session_context::SessionContext, AgentmemError> {
+        for ph in &self.scheme().placeholders() {
+            match scope.get(*ph) {
+                Some(v) if !v.is_empty() => {}
+                Some(_) => {
+                    return Err(AgentmemError::InvalidArgument {
+                        message: format!("scope key '{ph}' must not be empty"),
+                    });
+                }
+                None => {
+                    return Err(AgentmemError::MissingScope {
+                        key: (*ph).to_string(),
+                    });
+                }
+            }
+        }
+        let placeholders = self.scheme().placeholders();
+        for key in scope.keys() {
+            if !placeholders.contains(&key.as_str()) {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!("unexpected scope key '{key}'"),
+                });
+            }
+        }
+        crate::session_context::render_session_context(
+            &self.storage,
+            &self.session_context_template_file,
+            &self.tools,
+            scope,
+        )
     }
 
     /// The clean virtual path of a conventional file relative to the agents
@@ -387,28 +445,15 @@ impl Toolbox {
     }
 
     fn load_session_context(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &[])?;
-        let resolver = self.storage.resolver();
-        let mut body = Map::new();
-        let mut missing = Vec::new();
-        for (field, filename, _which) in FOUNDATIONAL {
-            let vpath = self.agents_vpath(filename)?;
-            // Inside-folder reads are permitted under every policy; no gate needed,
-            // but resolve still enforces containment.
-            let physical = resolver.resolve(&scope, &vpath)?;
-            match self.storage.read(&physical) {
-                Ok(content) => {
-                    body.insert((*field).to_string(), Value::String(content));
-                }
-                Err(AgentmemError::NotFound { .. }) => {
-                    body.insert((*field).to_string(), Value::Null);
-                    missing.push(Value::String((*filename).to_string()));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        body.insert("missing".to_string(), Value::Array(missing));
-        Ok(ok_json(Value::Object(body)))
+        // Accept only scope parameters (no `path`/`which`).
+        let scope = self.scope_map(args, &[])?;
+        let sc = crate::session_context::render_session_context(
+            &self.storage,
+            &self.session_context_template_file,
+            &self.tools,
+            &scope,
+        )?;
+        Ok(ok_json(json!({ "rendered": sc.rendered, "missing": sc.missing })))
     }
 
     fn evolve_core_persona(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
@@ -640,7 +685,7 @@ fn build_tools(scheme: &Scheme) -> Vec<Tool> {
         ),
         tool(
             "load_session_context",
-            "Read the five foundational session files (PERSONA, PROMPT, RULES, USER, TOOLS) in one call.",
+            "Render the session-context for the active scope: the foundational files woven into the configured template with a memory-tools guide. Returns { rendered, missing }.",
             merge_schema(scheme, fields_schema::<EmptyFields>()),
         ),
         tool(

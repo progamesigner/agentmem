@@ -126,7 +126,7 @@ expression: "schemas_for(\"\")"
     }
   },
   "load_session_context": {
-    "description": "Read the five foundational session files (PERSONA, PROMPT, RULES, USER, TOOLS) in one call.",
+    "description": "Render the session-context for the active scope: the foundational files woven into the configured template with a memory-tools guide. Returns { rendered, missing }.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},
