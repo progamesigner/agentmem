@@ -8,7 +8,7 @@ The system SHALL be configured exclusively via environment variables. CLI flags 
 
 #### Scenario: Env vars are read at startup
 - **WHEN** the server is launched
-- **THEN** it reads `AGENTMEM_ROOT_DIR`, `AGENTMEM_AGENTS_DIR`, `AGENTMEM_VFS_SCHEME`, `AGENTMEM_POLICY`, `AGENTMEM_TRANSPORT`, `AGENTMEM_HTTP_BIND`, `AGENTMEM_HTTP_BEARER`, `AGENTMEM_TIMEZONE`, `AGENTMEM_HONOR_IGNORE_FILES`, `AGENTMEM_INCLUDE_HIDDEN`, and `AGENTMEM_LOG` from the process environment
+- **THEN** it reads `AGENTMEM_ROOT_DIR`, `AGENTMEM_AGENTS_DIR`, `AGENTMEM_VFS_SCHEME`, `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE`, `AGENTMEM_POLICY`, `AGENTMEM_TRANSPORT`, `AGENTMEM_HTTP_BIND`, `AGENTMEM_HTTP_BEARER`, `AGENTMEM_TIMEZONE`, `AGENTMEM_HONOR_IGNORE_FILES`, `AGENTMEM_INCLUDE_HIDDEN`, and `AGENTMEM_LOG` from the process environment
 
 #### Scenario: CLI flag overrides env var
 - **WHEN** the server is launched with `--http-bind 0.0.0.0:9000` and `AGENTMEM_HTTP_BIND` is also set
@@ -27,7 +27,22 @@ The system SHALL require `AGENTMEM_ROOT_DIR` to be present and valid at startup,
 
 #### Scenario: All other variables have defaults
 - **WHEN** only `AGENTMEM_ROOT_DIR` is set and every other variable is unset
-- **THEN** the server starts successfully with: agents folder `Agents`, scheme `<agent>.<user>`, policy `namespaced`, transport `http`, bind `127.0.0.1:8000`, timezone `UTC`, ignore files honoured, hidden entries excluded
+- **THEN** the server starts successfully with: agents folder `Agents`, scheme `<agent>.<user>`, global session-context template path `<root>/AGENT_SESSION_CONTEXT.md`, policy `namespaced`, transport `http`, bind `127.0.0.1:8000`, timezone `UTC`, ignore files honoured, hidden entries excluded
+
+### Requirement: Session-context template file configuration
+The system SHALL honour `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` as the filesystem path to the global session-context template document. The default value SHALL be `<root>/AGENT_SESSION_CONTEXT.md`. A relative value SHALL be interpreted relative to the vault root. The configured file need not exist; when it is absent, the system SHALL fall back to the compiled-in default template (subject to the layered resolution defined in the memory-tools capability).
+
+#### Scenario: Default global template path
+- **WHEN** `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` is unset
+- **THEN** the global session-context template path resolves to `<root>/AGENT_SESSION_CONTEXT.md`
+
+#### Scenario: Custom global template path
+- **WHEN** `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE=/etc/agentmem/bootstrap.md`
+- **THEN** the server reads the global session-context template from that path
+
+#### Scenario: Configured file absent is not an error
+- **WHEN** `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` points to a path that does not exist
+- **THEN** the server starts successfully and the renderer falls back to the compiled-in default template
 
 ### Requirement: Agents folder configuration
 The system SHALL honour `AGENTMEM_AGENTS_DIR` as the relative folder name under the vault root that delimits the scoped/suffixed region. The default value SHALL be `Agents`. A value of `.` or the empty string SHALL be interpreted as "the agents folder IS the vault root".
