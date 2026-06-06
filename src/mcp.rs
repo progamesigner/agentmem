@@ -76,9 +76,11 @@ impl AgentmemServer {
     /// session-context URI, returning the scope map. Errors if the URI does not
     /// carry exactly one segment per placeholder.
     fn scope_from_uri(&self, uri: &str) -> Result<BTreeMap<String, String>, McpError> {
-        let rest = uri.strip_prefix(SESSION_CONTEXT_URI_PREFIX).ok_or_else(|| {
-            McpError::invalid_params(format!("unknown resource URI '{uri}'"), None)
-        })?;
+        let rest = uri
+            .strip_prefix(SESSION_CONTEXT_URI_PREFIX)
+            .ok_or_else(|| {
+                McpError::invalid_params(format!("unknown resource URI '{uri}'"), None)
+            })?;
         let placeholders = self.toolbox.scheme_placeholders();
         let segments: Vec<&str> = if rest.is_empty() {
             Vec::new()
@@ -258,7 +260,10 @@ impl ServerHandler for AgentmemServer {
             .map_err(to_mcp_error)?;
         Ok(GetPromptResult {
             description: Some("Session-context bootstrap.".to_string()),
-            messages: vec![PromptMessage::new_text(PromptMessageRole::User, sc.rendered)],
+            messages: vec![PromptMessage::new_text(
+                PromptMessageRole::User,
+                sc.rendered,
+            )],
         })
     }
 }

@@ -81,12 +81,13 @@ pub fn render_session_context(
     scope: &BTreeMap<String, String>,
 ) -> Result<SessionContext, AgentmemError> {
     let resolver = storage.resolver();
-    let rendered_scope = resolver
-        .scheme()
-        .render(scope)
-        .map_err(|e| AgentmemError::InvalidArgument {
-            message: e.to_string(),
-        })?;
+    let rendered_scope =
+        resolver
+            .scheme()
+            .render(scope)
+            .map_err(|e| AgentmemError::InvalidArgument {
+                message: e.to_string(),
+            })?;
 
     // --- build the context map + missing list from foundational files ---
     let mut context: BTreeMap<String, String> = BTreeMap::new();
@@ -221,9 +222,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
         let global = tmp.path().join("AGENT_SESSION_CONTEXT.md");
-        let sc =
-            render_session_context(&storage, &global, &[], &scope(&[("agent", "c"), ("user", "a")]))
-                .unwrap();
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "c"), ("user", "a")]),
+        )
+        .unwrap();
         assert!(sc.rendered.contains(MISSING_SENTINEL));
         assert_eq!(sc.missing.len(), 5);
         assert!(sc.rendered.contains("# Session Context"));
@@ -238,15 +243,23 @@ mod tests {
         write(&tmp, "Agents/c.a/PERSONA.c.a.md", "PERSONA-BODY");
         write(&tmp, "Agents/c.a/RULES.c.a.md", "RULES-BODY");
         let global = tmp.path().join("AGENT_SESSION_CONTEXT.md");
-        let sc =
-            render_session_context(&storage, &global, &[], &scope(&[("agent", "c"), ("user", "a")]))
-                .unwrap();
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "c"), ("user", "a")]),
+        )
+        .unwrap();
         assert!(sc.rendered.contains("PERSONA-BODY"));
         assert!(sc.rendered.contains("RULES-BODY"));
         assert!(sc.rendered.contains(MISSING_SENTINEL));
         assert_eq!(
             sc.missing,
-            vec!["PROMPT.md".to_string(), "USER.md".to_string(), "TOOLS.md".to_string()]
+            vec![
+                "PROMPT.md".to_string(),
+                "USER.md".to_string(),
+                "TOOLS.md".to_string()
+            ]
         );
     }
 
@@ -282,20 +295,39 @@ mod tests {
         let global = tmp.path().join("GLOBAL.md");
 
         // Only default available.
-        let sc = render_session_context(&storage, &global, &[], &scope(&[("agent", "c"), ("user", "a")]))
-            .unwrap();
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "c"), ("user", "a")]),
+        )
+        .unwrap();
         assert!(sc.rendered.contains("# Session Context"));
 
         // Global present → used.
         std::fs::write(&global, "GLOBAL-TEMPLATE").unwrap();
-        let sc = render_session_context(&storage, &global, &[], &scope(&[("agent", "c"), ("user", "a")]))
-            .unwrap();
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "c"), ("user", "a")]),
+        )
+        .unwrap();
         assert_eq!(sc.rendered, "GLOBAL-TEMPLATE");
 
         // Per-scope present → overrides global.
-        write(&tmp, "Agents/c.a/AGENT_SESSION_CONTEXT.c.a.md", "PER-SCOPE-TEMPLATE");
-        let sc = render_session_context(&storage, &global, &[], &scope(&[("agent", "c"), ("user", "a")]))
-            .unwrap();
+        write(
+            &tmp,
+            "Agents/c.a/AGENT_SESSION_CONTEXT.c.a.md",
+            "PER-SCOPE-TEMPLATE",
+        );
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "c"), ("user", "a")]),
+        )
+        .unwrap();
         assert_eq!(sc.rendered, "PER-SCOPE-TEMPLATE");
     }
 }

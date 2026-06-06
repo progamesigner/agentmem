@@ -21,7 +21,10 @@ enum Segment {
     Literal(String),
     /// `key` is the trimmed lookup identifier; `raw` is the original inner text,
     /// used to reproduce the token verbatim when the key is unknown.
-    Placeholder { key: String, raw: String },
+    Placeholder {
+        key: String,
+        raw: String,
+    },
 }
 
 /// The result of rendering: the output string plus any unrecognised placeholder

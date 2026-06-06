@@ -24,8 +24,8 @@ use serde_json::{Map, Value, json};
 use crate::error::AgentmemError;
 use crate::path::VirtualPath;
 use crate::policy::{Policy, PolicyError};
-use crate::storage::{Cursor, Storage};
 use crate::scheme::Scheme;
+use crate::storage::{Cursor, Storage};
 
 /// The default page size for `list_memory_notes`.
 const DEFAULT_LIMIT: u64 = 200;
@@ -453,7 +453,9 @@ impl Toolbox {
             &self.tools,
             &scope,
         )?;
-        Ok(ok_json(json!({ "rendered": sc.rendered, "missing": sc.missing })))
+        Ok(ok_json(
+            json!({ "rendered": sc.rendered, "missing": sc.missing }),
+        ))
     }
 
     fn evolve_core_persona(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {

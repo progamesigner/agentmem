@@ -20,17 +20,16 @@ async fn serve(
     scheme: &str,
 ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let bin = env!("CARGO_BIN_EXE_agentmem");
-    ()
-        .serve(
-            TokioChildProcess::new(Command::new(bin).configure(|cmd| {
-                cmd.env("AGENTMEM_ROOT_DIR", tmp.path());
-                cmd.env("AGENTMEM_TRANSPORT", "stdio");
-                cmd.env("AGENTMEM_VFS_SCHEME", scheme);
-            }))
-            .unwrap(),
-        )
-        .await
-        .expect("server should initialize")
+    ().serve(
+        TokioChildProcess::new(Command::new(bin).configure(|cmd| {
+            cmd.env("AGENTMEM_ROOT_DIR", tmp.path());
+            cmd.env("AGENTMEM_TRANSPORT", "stdio");
+            cmd.env("AGENTMEM_VFS_SCHEME", scheme);
+        }))
+        .unwrap(),
+    )
+    .await
+    .expect("server should initialize")
 }
 
 fn resource_text(result: &rmcp::model::ReadResourceResult) -> String {
@@ -56,15 +55,19 @@ async fn resource_template_and_read_render_context() {
     service
         .call_tool(CallToolRequestParam {
             name: "evolve_core_persona".into(),
-            arguments: json!({"agent":"coder","user":"alice","which":"persona","content":"PERSONA-BODY"})
-                .as_object()
-                .cloned(),
+            arguments:
+                json!({"agent":"coder","user":"alice","which":"persona","content":"PERSONA-BODY"})
+                    .as_object()
+                    .cloned(),
         })
         .await
         .unwrap();
 
     // resources/templates/list → URI params follow the scheme.
-    let templates = service.list_resource_templates(Default::default()).await.unwrap();
+    let templates = service
+        .list_resource_templates(Default::default())
+        .await
+        .unwrap();
     assert_eq!(templates.resource_templates.len(), 1);
     assert_eq!(
         templates.resource_templates[0].uri_template,
@@ -102,9 +105,10 @@ async fn prompt_lists_args_and_renders() {
     service
         .call_tool(CallToolRequestParam {
             name: "evolve_core_persona".into(),
-            arguments: json!({"agent":"coder","user":"alice","which":"persona","content":"PROMPT-PERSONA"})
-                .as_object()
-                .cloned(),
+            arguments:
+                json!({"agent":"coder","user":"alice","which":"persona","content":"PROMPT-PERSONA"})
+                    .as_object()
+                    .cloned(),
         })
         .await
         .unwrap();
@@ -150,7 +154,10 @@ async fn surfaces_follow_a_custom_scheme() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let service = serve(&tmp, "<agent>").await;
 
-    let templates = service.list_resource_templates(Default::default()).await.unwrap();
+    let templates = service
+        .list_resource_templates(Default::default())
+        .await
+        .unwrap();
     assert_eq!(
         templates.resource_templates[0].uri_template,
         "agentmem://session-context/{agent}"

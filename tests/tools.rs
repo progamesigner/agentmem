@@ -8,8 +8,8 @@
 use agentmem::AgentmemError;
 use agentmem::path::PathResolver;
 use agentmem::policy::Policy;
-use agentmem::storage::Storage;
 use agentmem::scheme::Scheme;
+use agentmem::storage::Storage;
 use agentmem::tools::Toolbox;
 use assert_fs::TempDir;
 use camino::Utf8PathBuf;

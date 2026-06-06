@@ -225,9 +225,8 @@ impl Config {
 
         // --- scheme ---
         let scheme_raw = get(VAR_SCHEME).unwrap_or_else(|| DEFAULT_SCHEME.to_string());
-        let scheme = Scheme::parse(&scheme_raw).map_err(|e| {
-            config_err(format!("{VAR_SCHEME} is invalid ({scheme_raw:?}): {e}"))
-        })?;
+        let scheme = Scheme::parse(&scheme_raw)
+            .map_err(|e| config_err(format!("{VAR_SCHEME} is invalid ({scheme_raw:?}): {e}")))?;
 
         // --- session-context template file ---
         // A relative path is resolved against the vault root; the default is
@@ -236,11 +235,7 @@ impl Config {
             match get(VAR_SESSION_CONTEXT_TEMPLATE_FILE).filter(|s| !s.is_empty()) {
                 Some(raw) => {
                     let p = PathBuf::from(raw);
-                    if p.is_absolute() {
-                        p
-                    } else {
-                        root_dir.join(p)
-                    }
+                    if p.is_absolute() { p } else { root_dir.join(p) }
                 }
                 None => root_dir.join(DEFAULT_SESSION_CONTEXT_FILE),
             };
@@ -478,7 +473,10 @@ mod tests {
         let cfg = build(with_root(&tmp, &[])).unwrap();
         assert_eq!(
             cfg.session_context_template_file,
-            tmp.path().canonicalize().unwrap().join("AGENT_SESSION_CONTEXT.md")
+            tmp.path()
+                .canonicalize()
+                .unwrap()
+                .join("AGENT_SESSION_CONTEXT.md")
         );
         // Relative override resolves against the vault root.
         let cfg = build(with_root(
@@ -488,12 +486,18 @@ mod tests {
         .unwrap();
         assert_eq!(
             cfg.session_context_template_file,
-            tmp.path().canonicalize().unwrap().join("custom/bootstrap.md")
+            tmp.path()
+                .canonicalize()
+                .unwrap()
+                .join("custom/bootstrap.md")
         );
         // Absolute override is used as-is.
         let cfg = build(with_root(
             &tmp,
-            &[(VAR_SESSION_CONTEXT_TEMPLATE_FILE, "/etc/agentmem/bootstrap.md")],
+            &[(
+                VAR_SESSION_CONTEXT_TEMPLATE_FILE,
+                "/etc/agentmem/bootstrap.md",
+            )],
         ))
         .unwrap();
         assert_eq!(
