@@ -21,7 +21,7 @@ default = ["transport-http"]
 transport-http = ["dep:axum", "rmcp/transport-streamable-http-server"]
 
 [dependencies]
-rmcp = { version = "1", features = ["server", "transport-io"] }
+rmcp = { version = "1.7", features = ["server", "transport-io"] }
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "fs", "signal", "io-std"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -44,7 +44,7 @@ axum = { version = "0.8.9", optional = true }
 assert_fs = "1.1.4"
 insta = { version = "1.47", features = ["json"] }
 # MCP client harness for stdio + http integration tests.
-rmcp = { version = "1", features = [
+rmcp = { version = "1.7", features = [
     "client",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
