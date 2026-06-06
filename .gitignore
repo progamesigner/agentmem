@@ -4,3 +4,6 @@
 
 # Local, per-developer Claude Code settings — never commit.
 .claude/settings.local.json
+
+# Local agent memory used for tests — never commit.
+.memory/
