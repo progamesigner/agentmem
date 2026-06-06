@@ -51,7 +51,7 @@ impl ServerHandler for AgentmemServer {
             server_info: Implementation::from_build_env(),
             instructions: Some(
                 "Durable, namespaced markdown memory for agents. Every tool call must \
-                 carry the scope keys defined by the server's VFS template; paths are \
+                 carry the scope keys defined by the server's VFS scheme; paths are \
                  virtual and relative to the vault root."
                     .to_string(),
             ),

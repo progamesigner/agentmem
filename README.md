@@ -14,7 +14,7 @@ human can still browse and hand-edit the vault directly in Obsidian.
 - Exposes a small, generic tool surface (nine tools — see [Tools](#tools)).
 - Speaks the official MCP protocol over both **HTTP** (default, `127.0.0.1:8000`)
   and **stdio** via the [`rmcp`](https://crates.io/crates/rmcp) SDK.
-- Namespaces each agent's files with a configurable VFS suffix template and
+- Namespaces each agent's files with a configurable VFS suffix scheme and
   enforces a single server-wide policy across two regions (inside / outside the
   agents folder).
 - Writes atomically (temp-file + fsync + rename), prevents path traversal, honours
@@ -53,7 +53,7 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 |---|---|---|
 | `AGENTMEM_ROOT_DIR` | *(required)* | Absolute path to the vault root. Must exist, be a directory, and be canonicalisable. |
 | `AGENTMEM_AGENTS_DIR` | `Agents` | Agents folder relative to the root. `.` or empty means the vault root itself is the agents folder. Must be relative with no traversal. |
-| `AGENTMEM_VFS_TEMPLATE` | `<agent>.<user>` | VFS suffix template. Each `<ident>` becomes a required scope parameter on every tool call. Empty string disables suffixing. |
+| `AGENTMEM_VFS_SCHEME` | `<agent>.<user>` | VFS suffix scheme. Each `<ident>` becomes a required scope parameter on every tool call. Empty string disables suffixing. |
 | `AGENTMEM_POLICY` | `namespaced` | One of `scoped`, `namespaced`, `readonly`, `readwrite` (see [Policies](#policies)). |
 | `AGENTMEM_TRANSPORT` | `http` | `http` or `stdio`. |
 | `AGENTMEM_HTTP_BIND` | `127.0.0.1:8000` | HTTP bind address (http transport only). |
@@ -63,10 +63,10 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_INCLUDE_HIDDEN` | `false` | Include dotfiles/dot-directories. Strict boolean. |
 | `AGENTMEM_LOG` | `warn,agentmem=info` | `tracing` env-filter directive. Logs always go to stderr. |
 
-### VFS template
+### VFS scheme
 
-The template defines how scope keys are spelled into directory segments and
-filename stems. With the default `<agent>.<user>` template and caller
+The scheme defines how scope keys are spelled into directory segments and
+filename stems. With the default `<agent>.<user>` scheme and caller
 `{agent: "coder", user: "alice"}`, the virtual path `Agents/tasks/plan.md`
 resolves to:
 
@@ -80,7 +80,7 @@ whose, and another scope's file is structurally unaddressable.
 
 ### Worked layouts
 
-**Default config** (`AGENTMEM_AGENTS_DIR=Agents`, `AGENTMEM_VFS_TEMPLATE=<agent>.<user>`):
+**Default config** (`AGENTMEM_AGENTS_DIR=Agents`, `AGENTMEM_VFS_SCHEME=<agent>.<user>`):
 
 ```
 vault/
@@ -111,7 +111,7 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 | `append_diary_entry` | Append a timestamped section to `diary/<YYYY-MM-DD>.md`. |
 
 Every tool's input schema includes the scope parameters derived from the active
-template; introspect them via the standard MCP `tools/list` call.
+scheme; introspect them via the standard MCP `tools/list` call.
 
 ## Policies
 

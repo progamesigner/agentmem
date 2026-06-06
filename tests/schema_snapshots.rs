@@ -1,26 +1,26 @@
 //! Snapshot tests for the tool input schemas exposed via `tools/list`, across
-//! several representative VFS templates (task 8.11).
+//! several representative VFS schemes (task 8.11).
 //!
-//! These lock the JSON shape of the template-derived scope fields merged with
+//! These lock the JSON shape of the scheme-derived scope fields merged with
 //! each tool's own fields. Run `cargo insta review` to accept intentional changes.
 
 use agentmem::path::PathResolver;
 use agentmem::policy::Policy;
 use agentmem::storage::Storage;
-use agentmem::template::Template;
+use agentmem::scheme::Scheme;
 use agentmem::tools::Toolbox;
 use assert_fs::TempDir;
 use camino::Utf8PathBuf;
 use chrono_tz::Tz;
 use serde_json::{Value, json};
 
-/// The `tools/list` schemas for a given template, as a name → inputSchema map.
-fn schemas_for(template: &str) -> Value {
+/// The `tools/list` schemas for a given scheme, as a name → inputSchema map.
+fn schemas_for(scheme: &str) -> Value {
     let tmp = TempDir::new().unwrap();
     let resolver = PathResolver::new(
         tmp.path().canonicalize().unwrap(),
         Utf8PathBuf::from("Agents"),
-        Template::parse(template).unwrap(),
+        Scheme::parse(scheme).unwrap(),
     );
     let storage = Storage::new(resolver, true, false);
     let toolbox = Toolbox::new(storage, Policy::Namespaced, Tz::UTC);
@@ -39,24 +39,24 @@ fn schemas_for(template: &str) -> Value {
 }
 
 #[test]
-fn schema_empty_template() {
-    insta::assert_json_snapshot!("schema_empty_template", schemas_for(""));
+fn schema_empty_scheme() {
+    insta::assert_json_snapshot!("schema_empty_scheme", schemas_for(""));
 }
 
 #[test]
-fn schema_agent_template() {
-    insta::assert_json_snapshot!("schema_agent_template", schemas_for("<agent>"));
+fn schema_agent_scheme() {
+    insta::assert_json_snapshot!("schema_agent_scheme", schemas_for("<agent>"));
 }
 
 #[test]
-fn schema_agent_user_template() {
-    insta::assert_json_snapshot!("schema_agent_user_template", schemas_for("<agent>.<user>"));
+fn schema_agent_user_scheme() {
+    insta::assert_json_snapshot!("schema_agent_user_scheme", schemas_for("<agent>.<user>"));
 }
 
 #[test]
-fn schema_team_agent_env_user_template() {
+fn schema_team_agent_env_user_scheme() {
     insta::assert_json_snapshot!(
-        "schema_team_agent_env_user_template",
+        "schema_team_agent_env_user_scheme",
         schemas_for("<team>.<agent>.<env>.<user>")
     );
 }

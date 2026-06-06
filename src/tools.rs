@@ -2,7 +2,7 @@
 //! nine tool handlers.
 //!
 //! Each tool's input schema is assembled at startup by merging the
-//! template-derived scope fields (see [`crate::template::Template::to_json_schema`])
+//! scheme-derived scope fields (see [`crate::scheme::Scheme::to_json_schema`])
 //! with the tool-specific fields generated from a `schemars`-derived struct. At
 //! call time the scope keys are extracted and validated, the virtual path is
 //! resolved under the caller's own scope, the policy gate runs before any IO, and
@@ -24,7 +24,7 @@ use crate::error::AgentmemError;
 use crate::path::VirtualPath;
 use crate::policy::{Policy, PolicyError};
 use crate::storage::{Cursor, Storage};
-use crate::template::Template;
+use crate::scheme::Scheme;
 
 /// The default page size for `list_memory_notes`.
 const DEFAULT_LIMIT: u64 = 200;
@@ -140,10 +140,10 @@ pub struct Toolbox {
 
 impl Toolbox {
     /// Build the toolbox and precompute every tool's input schema for the active
-    /// template.
+    /// scheme.
     pub fn new(storage: Storage, policy: Policy, timezone: Tz) -> Toolbox {
-        let template = storage.resolver().template().clone();
-        let tools = build_tools(&template);
+        let scheme = storage.resolver().scheme().clone();
+        let tools = build_tools(&scheme);
         Toolbox {
             storage,
             policy,
@@ -182,8 +182,8 @@ impl Toolbox {
 
     // --- scope + argument helpers ---
 
-    fn template(&self) -> &Template {
-        self.storage.resolver().template()
+    fn scheme(&self) -> &Scheme {
+        self.storage.resolver().scheme()
     }
 
     /// Extract and render the scope suffix from the arguments, and reject any
@@ -193,8 +193,8 @@ impl Toolbox {
         args: &JsonObject,
         tool_fields: &[&str],
     ) -> Result<String, AgentmemError> {
-        let template = self.template();
-        let placeholders = template.placeholders();
+        let scheme = self.scheme();
+        let placeholders = scheme.placeholders();
 
         let mut scope: BTreeMap<String, String> = BTreeMap::new();
         for ph in &placeholders {
@@ -230,7 +230,7 @@ impl Toolbox {
             }
         }
 
-        template
+        scheme
             .render(&scope)
             .map_err(|e| AgentmemError::InvalidArgument {
                 message: e.to_string(),
@@ -282,7 +282,7 @@ impl Toolbox {
             None => 0,
         };
 
-        let regions = self.policy.list_visible_regions(self.template().is_empty());
+        let regions = self.policy.list_visible_regions(self.scheme().is_empty());
         let mut items: Vec<String> = self
             .storage
             .list_visible(&scope, &regions)?
@@ -564,10 +564,10 @@ fn fields_schema<T: JsonSchema>() -> JsonObject {
     }
 }
 
-/// Merge the template-derived scope fields (first) with a tool's own field schema
+/// Merge the scheme-derived scope fields (first) with a tool's own field schema
 /// into a single object input schema with `additionalProperties: false`.
-fn merge_schema(template: &Template, fields: JsonObject) -> JsonObject {
-    let scope = template.to_json_schema();
+fn merge_schema(scheme: &Scheme, fields: JsonObject) -> JsonObject {
+    let scope = scheme.to_json_schema();
 
     let mut properties = Map::new();
     if let Some(Value::Object(sp)) = scope.get("properties") {
@@ -610,53 +610,53 @@ fn tool(name: &'static str, description: &'static str, schema: JsonObject) -> To
     }
 }
 
-/// Assemble the full nine-tool list for a given template.
-fn build_tools(template: &Template) -> Vec<Tool> {
+/// Assemble the full nine-tool list for a given scheme.
+fn build_tools(scheme: &Scheme) -> Vec<Tool> {
     vec![
         tool(
             "list_memory_notes",
             "List the virtual paths of memory notes visible to the given scope, with pagination.",
-            merge_schema(template, fields_schema::<ListFields>()),
+            merge_schema(scheme, fields_schema::<ListFields>()),
         ),
         tool(
             "read_memory_note",
             "Read the UTF-8 contents of a single memory note by its virtual path.",
-            merge_schema(template, fields_schema::<PathFields>()),
+            merge_schema(scheme, fields_schema::<PathFields>()),
         ),
         tool(
             "write_memory_note",
             "Atomically write the full contents of a memory note at the given virtual path.",
-            merge_schema(template, fields_schema::<WriteFields>()),
+            merge_schema(scheme, fields_schema::<WriteFields>()),
         ),
         tool(
             "edit_memory_note",
             "Replace the unique occurrence of a search string in a note and persist atomically.",
-            merge_schema(template, fields_schema::<EditFields>()),
+            merge_schema(scheme, fields_schema::<EditFields>()),
         ),
         tool(
             "delete_memory_note",
             "Delete a single memory note by its virtual path.",
-            merge_schema(template, fields_schema::<PathFields>()),
+            merge_schema(scheme, fields_schema::<PathFields>()),
         ),
         tool(
             "load_session_context",
             "Read the five foundational session files (PERSONA, PROMPT, RULES, USER, TOOLS) in one call.",
-            merge_schema(template, fields_schema::<EmptyFields>()),
+            merge_schema(scheme, fields_schema::<EmptyFields>()),
         ),
         tool(
             "evolve_core_persona",
             "Atomically replace one foundational session file selected by the `which` parameter.",
-            merge_schema(template, fields_schema::<EvolveFields>()),
+            merge_schema(scheme, fields_schema::<EvolveFields>()),
         ),
         tool(
             "update_task_heartbeat",
             "Atomically replace the scope's HEARTBEAT-STATE.md.",
-            merge_schema(template, fields_schema::<ContentOnlyFields>()),
+            merge_schema(scheme, fields_schema::<ContentOnlyFields>()),
         ),
         tool(
             "append_diary_entry",
             "Append a timestamped section to today's diary file for the active scope.",
-            merge_schema(template, fields_schema::<ContentOnlyFields>()),
+            merge_schema(scheme, fields_schema::<ContentOnlyFields>()),
         ),
     ]
 }

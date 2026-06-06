@@ -14,12 +14,12 @@ use chrono_tz::Tz;
 
 use crate::error::AgentmemError;
 use crate::policy::Policy;
-use crate::template::Template;
+use crate::scheme::Scheme;
 
 /// The default agents-folder name.
 pub const DEFAULT_AGENTS_DIR: &str = "Agents";
-/// The default VFS suffix template.
-pub const DEFAULT_TEMPLATE: &str = "<agent>.<user>";
+/// The default VFS suffix scheme.
+pub const DEFAULT_SCHEME: &str = "<agent>.<user>";
 /// The default HTTP bind address.
 pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8000";
 /// The default tracing filter directive.
@@ -27,7 +27,7 @@ pub const DEFAULT_LOG_FILTER: &str = "warn,agentmem=info";
 
 const VAR_ROOT_DIR: &str = "AGENTMEM_ROOT_DIR";
 const VAR_AGENTS_DIR: &str = "AGENTMEM_AGENTS_DIR";
-const VAR_TEMPLATE: &str = "AGENTMEM_VFS_TEMPLATE";
+const VAR_SCHEME: &str = "AGENTMEM_VFS_SCHEME";
 const VAR_POLICY: &str = "AGENTMEM_POLICY";
 const VAR_TRANSPORT: &str = "AGENTMEM_TRANSPORT";
 const VAR_HTTP_BIND: &str = "AGENTMEM_HTTP_BIND";
@@ -66,7 +66,7 @@ pub struct Config {
     /// Agents folder relative to the root; empty means "the agents folder is the
     /// vault root".
     pub agents_dir: Utf8PathBuf,
-    pub template: Template,
+    pub scheme: Scheme,
     pub policy: Policy,
     pub transport: Transport,
     pub timezone: Tz,
@@ -90,9 +90,9 @@ pub struct Cli {
     /// Agents folder name (overrides AGENTMEM_AGENTS_DIR).
     #[arg(long)]
     pub agents_dir: Option<String>,
-    /// VFS suffix template (overrides AGENTMEM_VFS_TEMPLATE).
+    /// VFS suffix scheme (overrides AGENTMEM_VFS_SCHEME).
     #[arg(long)]
-    pub vfs_template: Option<String>,
+    pub vfs_scheme: Option<String>,
     /// Policy: scoped|namespaced|readonly|readwrite (overrides AGENTMEM_POLICY).
     #[arg(long)]
     pub policy: Option<String>,
@@ -132,8 +132,8 @@ impl Cli {
         if let Some(v) = &self.agents_dir {
             m.insert(VAR_AGENTS_DIR, v.clone());
         }
-        if let Some(v) = &self.vfs_template {
-            m.insert(VAR_TEMPLATE, v.clone());
+        if let Some(v) = &self.vfs_scheme {
+            m.insert(VAR_SCHEME, v.clone());
         }
         if let Some(v) = &self.policy {
             m.insert(VAR_POLICY, v.clone());
@@ -209,10 +209,10 @@ impl Config {
         let agents_raw = get(VAR_AGENTS_DIR).unwrap_or_else(|| DEFAULT_AGENTS_DIR.to_string());
         let agents_dir = parse_agents_dir(&agents_raw)?;
 
-        // --- template ---
-        let template_raw = get(VAR_TEMPLATE).unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
-        let template = Template::parse(&template_raw).map_err(|e| {
-            config_err(format!("{VAR_TEMPLATE} is invalid ({template_raw:?}): {e}"))
+        // --- scheme ---
+        let scheme_raw = get(VAR_SCHEME).unwrap_or_else(|| DEFAULT_SCHEME.to_string());
+        let scheme = Scheme::parse(&scheme_raw).map_err(|e| {
+            config_err(format!("{VAR_SCHEME} is invalid ({scheme_raw:?}): {e}"))
         })?;
 
         // --- policy ---
@@ -247,7 +247,7 @@ impl Config {
         Ok(Config {
             root_dir,
             agents_dir,
-            template,
+            scheme,
             policy,
             transport,
             timezone,
@@ -262,7 +262,7 @@ impl Config {
         crate::path::PathResolver::new(
             self.root_dir.clone(),
             self.agents_dir.clone(),
-            self.template.clone(),
+            self.scheme.clone(),
         )
     }
 
@@ -280,7 +280,7 @@ impl Config {
         format!(
             "root_dir = {root}\n\
              agents_dir = {agents}\n\
-             template = {template:?}\n\
+             scheme = {scheme:?}\n\
              policy = {policy:?}\n\
              transport = {transport}\n\
              timezone = {tz}\n\
@@ -293,7 +293,7 @@ impl Config {
             } else {
                 self.agents_dir.as_str()
             },
-            template = self.template,
+            scheme = self.scheme,
             policy = self.policy,
             transport = transport,
             tz = self.timezone,
@@ -423,7 +423,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cfg = build(with_root(&tmp, &[])).unwrap();
         assert_eq!(cfg.agents_dir.as_str(), "Agents");
-        assert_eq!(cfg.template, Template::parse("<agent>.<user>").unwrap());
+        assert_eq!(cfg.scheme, Scheme::parse("<agent>.<user>").unwrap());
         assert_eq!(cfg.policy, Policy::Namespaced);
         assert_eq!(
             cfg.transport,
@@ -453,10 +453,10 @@ mod tests {
     }
 
     #[test]
-    fn malformed_template_is_rejected() {
+    fn malformed_scheme_is_rejected() {
         let tmp = TempDir::new().unwrap();
-        let err = build(with_root(&tmp, &[(VAR_TEMPLATE, "<agent")])).unwrap_err();
-        assert!(err.to_string().contains(VAR_TEMPLATE));
+        let err = build(with_root(&tmp, &[(VAR_SCHEME, "<agent")])).unwrap_err();
+        assert!(err.to_string().contains(VAR_SCHEME));
     }
 
     #[test]

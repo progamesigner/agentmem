@@ -46,7 +46,7 @@ Every client-supplied virtual path is validated and normalised:
 
 ## Own-scope strictness is structural
 
-Inside the agents folder, with a non-empty template, the resolver appends the
+Inside the agents folder, with a non-empty scheme, the resolver appends the
 caller's rendered scope as both the first directory segment and the file-stem
 suffix on **every** read, write, edit, and delete. A request for `PERSONA.md` from
 `{agent: coder, user: alice}` can only ever resolve to
@@ -56,7 +56,7 @@ or crafted — that addresses another scope's file: a crafted path such as
 `Agents/coder.alice/PERSONA.coder.bob.coder.alice.md`, never bob's file. Listings
 likewise filter by the caller's own suffix, so other scopes' files are invisible.
 
-An empty template (`AGENTMEM_VFS_TEMPLATE=`) disables suffixing: the agents folder
+An empty scheme (`AGENTMEM_VFS_SCHEME=`) disables suffixing: the agents folder
 degenerates into a plain shared directory governed by the policy's outside-folder
 rules, with no own-scope isolation.
 

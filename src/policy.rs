@@ -9,7 +9,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Region {
     /// Inside the configured agents folder — scoped and (with a non-empty
-    /// template) suffix-applied.
+    /// scheme) suffix-applied.
     InsideAgentsFolder,
     /// Outside the agents folder but still inside the vault root — shared, no
     /// suffix.
@@ -131,10 +131,10 @@ impl Policy {
     /// The regions `list_memory_notes` should walk, in deterministic order.
     ///
     /// The inside-agents-folder region is always readable; the outside region is
-    /// only readable when the policy permits it. The empty-template case does not
+    /// only readable when the policy permits it. The empty-scheme case does not
     /// change the *set* of regions (it only removes own-scope filtering, which the
     /// storage layer handles), so the parameter is accepted for API completeness.
-    pub fn list_visible_regions(self, _template_is_empty: bool) -> Vec<Region> {
+    pub fn list_visible_regions(self, _scheme_is_empty: bool) -> Vec<Region> {
         let mut regions = vec![Region::InsideAgentsFolder];
         if self.permission_for(Region::OutsideAgentsFolder).read {
             regions.push(Region::OutsideAgentsFolder);

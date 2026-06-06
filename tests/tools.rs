@@ -9,7 +9,7 @@ use agentmem::AgentmemError;
 use agentmem::path::PathResolver;
 use agentmem::policy::Policy;
 use agentmem::storage::Storage;
-use agentmem::template::Template;
+use agentmem::scheme::Scheme;
 use agentmem::tools::Toolbox;
 use assert_fs::TempDir;
 use camino::Utf8PathBuf;
@@ -17,17 +17,17 @@ use chrono_tz::Tz;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-fn toolbox(tmp: &TempDir, agents: &str, template: &str, policy: Policy) -> Toolbox {
+fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox {
     let resolver = PathResolver::new(
         tmp.path().canonicalize().unwrap(),
         Utf8PathBuf::from(agents),
-        Template::parse(template).unwrap(),
+        Scheme::parse(scheme).unwrap(),
     );
     let storage = Storage::new(resolver, true, false);
     Toolbox::new(storage, policy, Tz::UTC)
 }
 
-/// Default toolbox: `Agents` folder, `<agent>.<user>` template, namespaced.
+/// Default toolbox: `Agents` folder, `<agent>.<user>` scheme, namespaced.
 fn default_tb(tmp: &TempDir) -> Toolbox {
     toolbox(tmp, "Agents", "<agent>.<user>", Policy::Namespaced)
 }
@@ -854,7 +854,7 @@ fn unexpected_scope_param_is_rejected() {
 }
 
 #[test]
-fn custom_template_keys_are_honoured() {
+fn custom_scheme_keys_are_honoured() {
     let tmp = TempDir::new().unwrap();
     let tb = toolbox(
         &tmp,
@@ -871,7 +871,7 @@ fn custom_template_keys_are_honoured() {
 }
 
 #[test]
-fn empty_template_requires_no_scope_args() {
+fn empty_scheme_requires_no_scope_args() {
     let tmp = TempDir::new().unwrap();
     let tb = toolbox(&tmp, "Agents", "", Policy::Namespaced);
     call(

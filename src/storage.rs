@@ -389,16 +389,16 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::template::Template;
+    use crate::scheme::Scheme;
     use assert_fs::TempDir;
     use assert_fs::prelude::*;
     use camino::Utf8PathBuf;
 
-    fn storage(tmp: &TempDir, agents: &str, template: &str, honor: bool, hidden: bool) -> Storage {
+    fn storage(tmp: &TempDir, agents: &str, scheme: &str, honor: bool, hidden: bool) -> Storage {
         let resolver = PathResolver::new(
             tmp.path().canonicalize().unwrap(),
             Utf8PathBuf::from(agents),
-            Template::parse(template).unwrap(),
+            Scheme::parse(scheme).unwrap(),
         );
         Storage::new(resolver, honor, hidden)
     }

@@ -6,7 +6,7 @@
 //! Virtual paths are **relative to the vault root**. A path is *inside the agents
 //! folder* when its leading component equals the configured agents-folder name
 //! (or always, when the agents folder is the vault root). Inside the agents
-//! folder, with a non-empty template, the resolver inserts the caller's rendered
+//! folder, with a non-empty scheme, the resolver inserts the caller's rendered
 //! scope as the first directory segment beneath the agents folder AND appends it
 //! to the file stem — making another scope's file structurally unaddressable.
 //!
@@ -20,7 +20,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::error::AgentmemError;
 use crate::policy::Region;
-use crate::template::Template;
+use crate::scheme::Scheme;
 
 /// A validated, vault-root-relative virtual path with no traversal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +115,7 @@ impl AsRef<std::path::Path> for PhysicalPath {
 }
 
 /// Resolves virtual paths to physical paths under a fixed vault root, agents
-/// folder, and template.
+/// folder, and scheme.
 #[derive(Debug, Clone)]
 pub struct PathResolver {
     /// Canonical absolute vault root.
@@ -123,19 +123,19 @@ pub struct PathResolver {
     /// Agents folder relative to the root. Empty means "the agents folder is the
     /// vault root".
     agents_dir: Utf8PathBuf,
-    template: Template,
+    scheme: Scheme,
 }
 
 impl PathResolver {
     pub fn new(
         vault_root: std::path::PathBuf,
         agents_dir: Utf8PathBuf,
-        template: Template,
+        scheme: Scheme,
     ) -> PathResolver {
         PathResolver {
             vault_root,
             agents_dir,
-            template,
+            scheme,
         }
     }
 
@@ -147,8 +147,8 @@ impl PathResolver {
         &self.agents_dir
     }
 
-    pub fn template(&self) -> &Template {
-        &self.template
+    pub fn scheme(&self) -> &Scheme {
+        &self.scheme
     }
 
     /// `true` when the agents folder is the vault root itself.
@@ -186,7 +186,7 @@ impl PathResolver {
     /// containment check.
     ///
     /// `rendered_scope` is the already-validated rendered suffix string (empty
-    /// when the template is empty).
+    /// when the scheme is empty).
     pub fn resolve(
         &self,
         rendered_scope: &str,
@@ -198,7 +198,7 @@ impl PathResolver {
             Region::OutsideAgentsFolder => vpath.0.clone(),
             Region::InsideAgentsFolder => {
                 let remainder = self.agents_remainder(vpath);
-                if self.template.is_empty() {
+                if self.scheme.is_empty() {
                     // No per-scope segment, no suffix.
                     self.join_agents(&remainder)
                 } else {
@@ -246,7 +246,7 @@ impl PathResolver {
             rel.strip_prefix(&self.agents_dir).ok()?
         };
 
-        if self.template.is_empty() {
+        if self.scheme.is_empty() {
             // No scope filtering: present the file at its root-relative path.
             return Some(VirtualPath::from_relative(rel.to_owned()));
         }
@@ -361,11 +361,11 @@ mod tests {
     use super::*;
     use assert_fs::prelude::*;
 
-    fn resolver(root: &std::path::Path, agents: &str, template: &str) -> PathResolver {
+    fn resolver(root: &std::path::Path, agents: &str, scheme: &str) -> PathResolver {
         PathResolver::new(
             root.canonicalize().unwrap(),
             Utf8PathBuf::from(agents),
-            Template::parse(template).unwrap(),
+            Scheme::parse(scheme).unwrap(),
         )
     }
 
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn default_template_resolves_agent_and_user() {
+    fn default_scheme_resolves_agent_and_user() {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
         let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn single_key_template_suffixes_extensionless_friendly() {
+    fn single_key_scheme_suffixes_extensionless_friendly() {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<agent>");
         let vp = VirtualPath::new("Agents/HEARTBEAT-STATE.md").unwrap();
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_key_template() {
+    fn multi_key_scheme() {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<team>.<agent>.<env>.<user>");
         let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_template_applies_no_suffix() {
+    fn empty_scheme_applies_no_suffix() {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "");
         let vp = VirtualPath::new("Agents/notes.md").unwrap();
