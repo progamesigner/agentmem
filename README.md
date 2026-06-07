@@ -34,6 +34,54 @@ cargo install --path .            # from a checkout
 Pre-built release binaries for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`,
 and `x86_64-pc-windows-msvc` are attached to each tagged release.
 
+## Container image
+
+A minimal multi-arch image (`linux/amd64`, `linux/arm64`) is published to the
+GitHub Container Registry on every tagged release. It is a statically linked
+binary on `scratch` (~8 MB, no shell or OS userland) running as a non-root user.
+
+```sh
+docker pull ghcr.io/progamesigner/agentmem:latest
+```
+
+Tags per release: `:<version>` (e.g. `:0.1.0`), the moving `:latest`, and an
+immutable `:sha-<gitsha>`.
+
+Run it with a vault mounted at `/vault` (the image sets `AGENTMEM_ROOT_DIR=/vault`
+and binds the HTTP transport to `0.0.0.0:8000`):
+
+```sh
+# The mounted vault must be writable by the image's non-root UID (65532).
+docker run --rm -p 8000:8000 \
+  -e AGENTMEM_HTTP_BEARER=change-me \
+  -v "$PWD/vault:/vault" \
+  ghcr.io/progamesigner/agentmem:latest
+```
+
+Set `AGENTMEM_HTTP_BEARER` for any deployment reachable off-host — the endpoint
+is otherwise unauthenticated (a startup `WARN` is logged). Override any
+[configuration variable](#configuration) with `-e`.
+
+**Health checks.** The image has no shell, so it cannot carry a Docker
+`HEALTHCHECK`. Probe the `GET /health` route from your orchestrator instead:
+
+```yaml
+# Kubernetes — the kubelet probes over HTTP, nothing runs inside the container.
+livenessProbe:
+  httpGet: { path: /health, port: 8000 }
+```
+
+A Docker Compose `healthcheck:` runs its command *inside* the container and so
+cannot work against this image (no shell, no `wget`/`curl`). Probe `/health`
+from outside instead — the orchestrator, a sidecar, or an external monitor.
+
+Every published image carries the full set of dynamic OCI labels
+(`org.opencontainers.image.{created,revision,version,title,description,source,url,authors,documentation,vendor}`):
+
+```sh
+docker inspect ghcr.io/progamesigner/agentmem:latest -f '{{json .Config.Labels}}'
+```
+
 ## Quick start
 
 ```sh

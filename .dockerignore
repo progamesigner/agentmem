@@ -1,0 +1,9 @@
+# Deny everything by default, then re-include only the inputs the build needs.
+# An allowlist is fail-closed: new files (target/, secrets, scratch dirs) stay
+# out of the build context unless explicitly added here.
+*
+
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!src

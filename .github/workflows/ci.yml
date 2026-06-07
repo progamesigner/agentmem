@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+    - main
   pull_request:
 
 env:
@@ -13,18 +14,23 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --all-features
+    - uses: actions/checkout@v6
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Format check
+      run: cargo fmt --all -- --check
+
+    - name: Clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Test
+      run: cargo test --all-features
 
   release-binaries:
     name: release ${{ matrix.target }}
@@ -35,26 +41,107 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
+        - target: x86_64-unknown-linux-gnu
+          os: ubuntu-latest
+        - target: aarch64-apple-darwin
+          os: macos-latest
+        - target: x86_64-pc-windows-msvc
+          os: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: agentmem-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/agentmem
-            target/${{ matrix.target }}/release/agentmem.exe
-          if-no-files-found: ignore
+    - uses: actions/checkout@v6
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Build release binary
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: agentmem-${{ matrix.target }}
+        path: |
+          target/${{ matrix.target }}/release/agentmem
+          target/${{ matrix.target }}/release/agentmem.exe
+        if-no-files-found: ignore
+
+  publish-image:
+    name: publish container image
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Source the OCI labels that metadata-action does not generate from the
+    # crate manifest, so they stay in sync with Cargo.toml.
+    - name: Read authors and documentation from Cargo.toml
+      run: |
+        meta=$(cargo metadata --no-deps --format-version 1)
+        echo "IMAGE_AUTHORS=$(echo "$meta" | jq -r '.packages[0].authors | join(", ")')" >> "$GITHUB_ENV"
+        echo "IMAGE_DOCUMENTATION=$(echo "$meta" | jq -r '.packages[0].documentation')" >> "$GITHUB_ENV"
+
+    - name: Compute tags and labels
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: ghcr.io/progamesigner/agentmem
+        tags: |
+          type=semver,pattern={{version}}
+          type=raw,value=latest
+          type=sha,prefix=sha-
+        labels: |
+          org.opencontainers.image.authors=${{ env.IMAGE_AUTHORS }}
+          org.opencontainers.image.documentation=${{ env.IMAGE_DOCUMENTATION }}
+          org.opencontainers.image.vendor=progamesigner
+
+    # Build the amd64 image and smoke-test it before any push is trusted.
+    - name: Build amd64 image for smoke test
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        platforms: linux/amd64
+        load: true
+        tags: agentmem:smoke
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Smoke test the health endpoint
+      run: |
+        docker run -d --name smoke -p 8000:8000 agentmem:smoke
+        ok=0
+        for _ in $(seq 1 30); do
+          if curl -fsS http://127.0.0.1:8000/health; then ok=1; break; fi
+          sleep 1
+        done
+        docker logs smoke
+        docker rm -f smoke
+        test "$ok" = "1"
+
+    - name: Build and push multi-arch image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
