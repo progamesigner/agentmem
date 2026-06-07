@@ -1,9 +1,10 @@
 # AgentMem
 
-An MCP server fronting an Obsidian-style markdown vault for durable, multi-tenant
+An MCP server fronting a plain-markdown vault for durable, multi-tenant
 agent memory. One server process serves many agents concurrently; each tool call
-carries its own scope (agent, user, …) so files are namespaced on disk while the
-human can still browse and hand-edit the vault directly in Obsidian.
+carries its own scope (agent, user, …) so files are namespaced on disk while a
+human can still browse and hand-edit the vault directly with any editor (Obsidian
+works well for it).
 
 > **Status: active development.** The design, specs, and task breakdown live under
 > [`openspec/changes/build-agentmem-mcp-server/`](openspec/changes/build-agentmem-mcp-server/).
@@ -76,7 +77,7 @@ resolves to:
 ```
 
 The scope appears both as the per-scope directory and as a suffix on the file
-stem, so a human opening the vault in Obsidian can immediately see whose file is
+stem, so a human opening the vault in any editor can immediately see whose file is
 whose, and another scope's file is structurally unaddressable.
 
 ### Worked layouts
@@ -241,8 +242,9 @@ When `AGENTMEM_HTTP_BEARER` is set, add `-H "Authorization: Bearer <token>"`.
 
 ## Human-in-the-loop editing
 
-Because the on-disk layout is plain markdown, a human can open the vault in
-Obsidian and hand-edit any `Agents/<scope>/...` file directly. The agent will see
+Because the on-disk layout is plain markdown, a human can open the vault in any
+editor — Obsidian is a convenient choice — and hand-edit any `Agents/<scope>/...`
+file directly. The agent will see
 the human's edits as if it had written them itself — this is the supported channel
 for curating or correcting an agent's memory. Creating `plan.coder.alice.md` by
 hand makes it appear to the `coder.alice` scope as the virtual note `plan.md`.

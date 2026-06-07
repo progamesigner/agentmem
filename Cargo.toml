@@ -2,7 +2,7 @@
 name = "agentmem"
 version = "0.1.0"
 edition = "2024"
-description = "An MCP server fronting an Obsidian-style markdown vault for multi-tenant agent memory."
+description = "An MCP server fronting a plain-markdown vault for multi-tenant agent memory."
 license = "MIT"
 repository = "https://github.com/progamesigner/agentmem"
 readme = "README.md"

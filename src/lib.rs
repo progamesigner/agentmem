@@ -1,4 +1,4 @@
-//! `agentmem` — an MCP server fronting an Obsidian-style markdown vault for
+//! `agentmem` — an MCP server fronting a plain-markdown vault for
 //! multi-tenant agent memory.
 //!
 //! See `openspec/changes/build-agentmem-mcp-server/` for the full specification.
