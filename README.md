@@ -6,9 +6,9 @@ carries its own scope (agent, user, …) so files are namespaced on disk while a
 human can still browse and hand-edit the vault directly with any editor (Obsidian
 works well for it).
 
-> **Status: active development.** The design, specs, and task breakdown live under
-> [`openspec/changes/build-agentmem-mcp-server/`](openspec/changes/build-agentmem-mcp-server/).
-> Interfaces may change until the `0.1.0` tag is published.
+> **Status: released.** The current capability specs live under
+> [`openspec/specs/`](openspec/specs/); proposed and archived changes live under
+> [`openspec/changes/`](openspec/changes/).
 
 ## What it does
 
