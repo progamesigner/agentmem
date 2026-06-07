@@ -147,13 +147,35 @@ The active template is resolved per request, first hit wins:
 
 Nothing errors on absence — a fresh vault renders an instructions-only bootstrap.
 Unknown `{{…}}` tokens are left literal. The same rendered output is exposed
-through three surfaces:
+through three MCP surfaces plus one plain-HTTP endpoint:
 
-| Surface | MCP shape | For |
+| Surface | Shape | For |
 |---|---|---|
 | `load_session_context` tool | `{ rendered, missing }` | the model pulling its own context mid-session |
 | `session-context` resource | `agentmem://session-context/{…}` (params follow the scheme) | client auto-attach |
 | `session-context` prompt | required args follow the scheme | user slash-command |
+| `GET /v1/context` | `text/markdown` (or `{ rendered, missing }` JSON) | a harness/client fetching the system prompt without MCP |
+
+### `GET /v1/context`
+
+A versioned, stateless, read-only HTTP route (HTTP transport only) that renders
+the same bootstrap for a harness to fetch directly. Each VFS-scheme placeholder is
+a query parameter; the scope is bound in scheme order:
+
+```sh
+# Markdown by default — drop straight into a system prompt.
+curl 'http://127.0.0.1:8000/v1/context?agent=default&user=alice'
+
+# JSON ({ rendered, missing }) via content negotiation.
+curl -H 'Accept: application/json' \
+  'http://127.0.0.1:8000/v1/context?agent=default&user=alice'
+```
+
+Missing, empty, or unexpected scope parameters return `400` with a
+`{ "error": … }` body; absent foundational files are never errors. The route sits
+behind the same `AGENTMEM_HTTP_BEARER` gate as `/mcp` (add
+`-H "Authorization: Bearer <token>"` when a bearer is configured); only `/health`
+is always reachable.
 
 ## Policies
 

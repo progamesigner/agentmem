@@ -60,6 +60,22 @@ impl AgentmemServer {
         }
     }
 
+    /// The scheme's placeholder idents, in order — the scope keys every surface
+    /// requires. Exposed so the HTTP `GET /v1/context` handler can bind query
+    /// parameters to the scope without reaching into the private toolbox.
+    pub fn scheme_placeholders(&self) -> Vec<String> {
+        self.toolbox.scheme_placeholders()
+    }
+
+    /// Render the session-context for a validated scope map. Exposed so the HTTP
+    /// `GET /v1/context` handler can reuse the same renderer as the MCP surfaces.
+    pub fn render_session_context(
+        &self,
+        scope: &BTreeMap<String, String>,
+    ) -> Result<crate::session_context::SessionContext, AgentmemError> {
+        self.toolbox.render_session_context(scope)
+    }
+
     /// The `agentmem://session-context/{k1}/{k2}/…` URI template for the active
     /// scheme; the params follow the scheme's placeholders in order.
     fn session_context_uri_template(&self) -> String {

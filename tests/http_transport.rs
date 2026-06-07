@@ -6,6 +6,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
+use rmcp::model::CallToolRequestParams;
 use rmcp::service::ServiceExt;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -114,4 +115,199 @@ async fn http_non_loopback_without_bearer_warns_on_startup() {
 
     child.kill().await.unwrap();
     assert!(found, "expected a startup WARN naming AGENTMEM_HTTP_BEARER");
+}
+
+// --- GET /v1/context -------------------------------------------------------
+
+#[tokio::test]
+async fn context_endpoint_renders_markdown_bootstrap() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18652";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/v1/context?agent=default&user=alice"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/markdown"),
+        "expected text/markdown content type"
+    );
+    let body = resp.text().await.unwrap();
+    // A fresh vault renders the compiled-in default template.
+    assert!(body.contains("# Session Context"));
+    assert!(body.contains("<AGENTMEM:TOOLS>"));
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn context_endpoint_json_negotiation_reports_missing() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18653";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/v1/context?agent=default&user=alice"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["rendered"]
+            .as_str()
+            .unwrap()
+            .contains("# Session Context")
+    );
+    // A fresh vault has all five foundational files absent.
+    let missing = body["missing"].as_array().unwrap();
+    assert_eq!(missing.len(), 5);
+    assert!(missing.iter().any(|v| v == "PERSONA.md"));
+    assert!(missing.iter().any(|v| v == "MEMORY.md"));
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn context_endpoint_rejects_invalid_scope() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18654";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+
+    // Missing placeholder `user`.
+    let resp = client
+        .get(format!("{base}/v1/context?agent=default"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("user"));
+
+    // Empty value for `user`.
+    let resp = client
+        .get(format!("{base}/v1/context?agent=default&user="))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("user"));
+
+    // Unexpected parameter `role`.
+    let resp = client
+        .get(format!(
+            "{base}/v1/context?agent=default&user=alice&role=admin"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("role"));
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn context_endpoint_honours_bearer() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18655";
+    let mut child = spawn(tmp.path(), Some(bind), Some("s3cret"));
+    let base = format!("http://{bind}");
+    wait_health(&base).await; // /health stays reachable without auth.
+
+    let client = reqwest::Client::new();
+    let url = format!("{base}/v1/context?agent=default&user=alice");
+
+    // No bearer → 401.
+    let resp = client.get(&url).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 401);
+
+    // Matching bearer → 200.
+    let resp = client
+        .get(&url)
+        .header("Authorization", "Bearer s3cret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(resp.text().await.unwrap().contains("# Session Context"));
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn context_endpoint_matches_load_session_context_tool() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18656";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    // Rendered markdown from the plain HTTP endpoint.
+    let client = reqwest::Client::new();
+    let http_body = client
+        .get(format!("{base}/v1/context?agent=default&user=alice"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    // Rendered text from the `load_session_context` MCP tool for the same scope.
+    let transport = StreamableHttpClientTransport::with_client(
+        reqwest::Client::default(),
+        StreamableHttpClientTransportConfig::with_uri(format!("{base}/mcp")),
+    );
+    let service = ().serve(transport).await.expect("mcp initialize");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("agent".into(), serde_json::json!("default"));
+    arguments.insert("user".into(), serde_json::json!("alice"));
+    let result = service
+        .call_tool(CallToolRequestParams::new("load_session_context").with_arguments(arguments))
+        .await
+        .unwrap();
+    let tool_rendered = result.structured_content.as_ref().unwrap()["rendered"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    service.cancel().await.unwrap();
+
+    assert_eq!(
+        http_body, tool_rendered,
+        "the /v1/context body must be byte-identical to the tool result"
+    );
+
+    child.kill().await.unwrap();
 }
