@@ -195,9 +195,23 @@ Anything resolving outside the vault root is always denied.
 
 ## Client configuration
 
-### Claude Desktop (stdio sidecar)
+Every MCP client connects over one of the two transports:
 
-`claude_desktop_config.json`:
+- **stdio sidecar** — the client *launches* `agentmem` itself, so it owns the
+  process lifecycle. You supply `AGENTMEM_ROOT_DIR` and `AGENTMEM_TRANSPORT=stdio`
+  through the client's env block. The binary must be on `PATH` (or give an
+  absolute path).
+- **Local HTTP** — you run `agentmem` yourself (HTTP is the default transport, on
+  `127.0.0.1:8000`) and point the client at `http://127.0.0.1:8000/mcp`. Start the
+  server *before* the client connects.
+
+The snippets below show both transports per client. When `AGENTMEM_HTTP_BEARER`
+is set, attach `Authorization: Bearer <token>` through whatever header mechanism
+the client exposes (noted inline where relevant).
+
+### Claude Desktop
+
+`claude_desktop_config.json` (stdio only):
 
 ```json
 {
@@ -213,19 +227,162 @@ Anything resolving outside the vault root is always denied.
 }
 ```
 
-### Local HTTP server (`mcp.json`)
+### Claude Code
+
+Add it from the CLI — stdio (note the `--` before the server command):
+
+```sh
+claude mcp add agentmem \
+  --env AGENTMEM_ROOT_DIR=/path/to/vault --env AGENTMEM_TRANSPORT=stdio \
+  -- agentmem
+
+# …or HTTP against an already-running server:
+claude mcp add --transport http agentmem http://127.0.0.1:8000/mcp
+```
+
+Or commit a project-scoped `.mcp.json` (`mcpServers` key; `command`/`env` for
+stdio, `type`/`url` for HTTP):
 
 ```json
 {
   "mcpServers": {
-    "agentmem": {
+    "agentmem-stdio": {
+      "command": "agentmem",
+      "env": { "AGENTMEM_ROOT_DIR": "/path/to/vault", "AGENTMEM_TRANSPORT": "stdio" }
+    },
+    "agentmem-http": {
+      "type": "http",
       "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }
 ```
 
-### curl (HTTP transport)
+### Codex CLI
+
+`~/.codex/config.toml` — each server is a `[mcp_servers.<name>]` table. A `command`
+key makes it a stdio server; a `url` key (no `command`) makes it streamable HTTP:
+
+```toml
+# stdio sidecar
+[mcp_servers.agentmem]
+command = "agentmem"
+env = { AGENTMEM_ROOT_DIR = "/path/to/vault", AGENTMEM_TRANSPORT = "stdio" }
+
+# …or HTTP against an already-running server (use one table or the other)
+[mcp_servers.agentmem]
+url = "http://127.0.0.1:8000/mcp"
+# bearer_token_env_var = "AGENTMEM_TOKEN"   # if AGENTMEM_HTTP_BEARER is set
+```
+
+`codex mcp add agentmem -- agentmem` is the stdio shortcut; HTTP servers are added
+by editing `config.toml`.
+
+### Antigravity CLI
+
+Edit the MCP config at `~/.gemini/antigravity/mcp_config.json` (in the IDE: Agent
+panel → **MCP Servers** → **Manage MCP Servers** → **View raw config**). The
+top-level key is `mcpServers`, and HTTP uses **`serverUrl`** — *not* `url`:
+
+```json
+{
+  "mcpServers": {
+    "agentmem-stdio": {
+      "command": "agentmem",
+      "env": { "AGENTMEM_ROOT_DIR": "/path/to/vault", "AGENTMEM_TRANSPORT": "stdio" }
+    },
+    "agentmem-http": {
+      "serverUrl": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+### GitHub Copilot
+
+Workspace `.vscode/mcp.json` — Copilot (agent mode) reads VS Code's MCP config.
+The top-level key is **`servers`** (not `mcpServers`) and every entry carries an
+explicit `type`. Optional `inputs` prompt for secrets:
+
+```json
+{
+  "inputs": [
+    { "type": "promptString", "id": "agentmem-token", "description": "AgentMem bearer", "password": true }
+  ],
+  "servers": {
+    "agentmem-stdio": {
+      "type": "stdio",
+      "command": "agentmem",
+      "env": { "AGENTMEM_ROOT_DIR": "${workspaceFolder}/vault", "AGENTMEM_TRANSPORT": "stdio" }
+    },
+    "agentmem-http": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": { "Authorization": "Bearer ${input:agentmem-token}" }
+    }
+  }
+}
+```
+
+Drop the `inputs` block and the `headers` line when no bearer is configured.
+
+### VS Code
+
+VS Code's native MCP support uses the **same `.vscode/mcp.json` format** shown for
+Copilot above (the `servers` key, `type: stdio` / `type: http`). The only
+difference is *where* it can live: per workspace in `.vscode/mcp.json`, or for all
+workspaces in your user profile — open the latter via the command palette
+(**MCP: Open User Configuration**) rather than editing it by hand.
+
+### OpenCode
+
+`opencode.json` — servers live under the `mcp` key. OpenCode names the transports
+`local`/`remote`, takes `command` as an **array**, and uses `environment` (not
+`env`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "agentmem-local": {
+      "type": "local",
+      "command": ["agentmem"],
+      "enabled": true,
+      "environment": { "AGENTMEM_ROOT_DIR": "/path/to/vault", "AGENTMEM_TRANSPORT": "stdio" }
+    },
+    "agentmem-remote": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8000/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+For a bearer-protected remote, add `"headers": { "Authorization": "Bearer …" }`.
+
+### Generic MCP client
+
+Most clients accept the canonical `mcpServers` block — `command`/`env` for a
+stdio sidecar, `url` for Local HTTP:
+
+```json
+{
+  "mcpServers": {
+    "agentmem-stdio": {
+      "command": "agentmem",
+      "env": { "AGENTMEM_ROOT_DIR": "/path/to/vault", "AGENTMEM_TRANSPORT": "stdio" }
+    },
+    "agentmem-http": {
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+### curl (raw HTTP transport)
+
+For poking the HTTP transport directly, without an MCP client:
 
 ```sh
 # Liveness probe.
