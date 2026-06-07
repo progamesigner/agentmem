@@ -1,10 +1,11 @@
 ---
 source: tests/schema_snapshots.rs
+assertion_line: 53
 expression: "schemas_for(\"<agent>\")"
 ---
 {
   "append_diary_entry": {
-    "description": "Append a timestamped section to today's diary file for the active scope.",
+    "description": "Append a timestamped section to today's diary file for the active scope. Accepts an optional `title` for the entry heading.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -14,8 +15,15 @@ expression: "schemas_for(\"<agent>\")"
           "type": "string"
         },
         "content": {
-          "description": "The content to write.",
+          "description": "The diary entry body.",
           "type": "string"
+        },
+        "title": {
+          "description": "Optional short title for the entry; when present the heading reads\n`## <HH:MM:SS> — <title>`, otherwise `## <HH:MM:SS>`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -80,7 +88,7 @@ expression: "schemas_for(\"<agent>\")"
     }
   },
   "evolve_core_persona": {
-    "description": "Atomically replace one foundational session file selected by the `which` parameter.",
+    "description": "Atomically replace one foundational session file (persona|prompt|rules|user|memory) selected by `which`. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -90,17 +98,17 @@ expression: "schemas_for(\"<agent>\")"
           "type": "string"
         },
         "content": {
-          "description": "The full new contents of the selected file.",
+          "description": "The full new contents of the selected file. `user` content must be ≤ 100\nlines and `memory` content ≤ 200 lines.",
           "type": "string"
         },
         "which": {
-          "description": "Which foundational file to replace.",
+          "description": "Which foundational file to replace: one of persona, prompt, rules, user, memory.",
           "enum": [
             "persona",
             "prompt",
             "rules",
             "user",
-            "tools"
+            "memory"
           ],
           "type": "string"
         }
@@ -196,7 +204,7 @@ expression: "schemas_for(\"<agent>\")"
     }
   },
   "update_task_heartbeat": {
-    "description": "Atomically replace the scope's HEARTBEAT-STATE.md.",
+    "description": "Atomically replace the scope's HEARTBEAT.md.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

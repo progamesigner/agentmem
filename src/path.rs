@@ -168,6 +168,25 @@ impl PathResolver {
         }
     }
 
+    /// `true` when `vpath` is inside the agents folder and names a file directly
+    /// at the per-scope root — i.e. the remainder beneath the agents folder has
+    /// no subfolder segment. Such root-level paths (e.g. `MEMORY.md`,
+    /// `PERSONA.md`, `HEARTBEAT.md`) are reserved for the dedicated wrapper tools.
+    /// Subfolder files like `diary/2026-01-01.md` are NOT root-level.
+    pub fn is_agents_root_level(&self, vpath: &VirtualPath) -> bool {
+        if self.detect_region(vpath) != Region::InsideAgentsFolder {
+            return false;
+        }
+        let remainder = self.agents_remainder(vpath);
+        // Root-level when the remainder is a single filename component (its parent
+        // is empty) — there is no intervening subfolder segment.
+        remainder.file_name().is_some()
+            && remainder
+                .parent()
+                .map(|p| p.as_str().is_empty())
+                .unwrap_or(true)
+    }
+
     /// The portion of an inside-agents virtual path beneath the agents folder.
     fn agents_remainder(&self, vpath: &VirtualPath) -> Utf8PathBuf {
         if self.agents_is_root() {
@@ -322,8 +341,8 @@ fn apply_scope_to_relative(relative: &Utf8Path, suffix: &str) -> Option<Utf8Path
 }
 
 /// Insert `.<suffix>` between a filename's stem and its extension:
-/// `plan.md` + `coder.alice` → `plan.coder.alice.md`; `HEARTBEAT-STATE` +
-/// `coder` → `HEARTBEAT-STATE.coder`.
+/// `plan.md` + `coder.alice` → `plan.coder.alice.md`; `NOTES` +
+/// `coder` → `NOTES.coder` (extensionless names get the suffix appended).
 fn apply_suffix_to_filename(filename: &str, suffix: &str) -> String {
     let path = Utf8Path::new(filename);
     match (path.file_stem(), path.extension()) {
@@ -415,13 +434,47 @@ mod tests {
     fn single_key_scheme_suffixes_extensionless_friendly() {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<agent>");
-        let vp = VirtualPath::new("Agents/HEARTBEAT-STATE.md").unwrap();
+        let vp = VirtualPath::new("Agents/TASK-STATE.md").unwrap();
         let physical = r.resolve("coder", &vp).unwrap();
         assert!(
             physical
                 .as_path()
-                .ends_with("Agents/coder/HEARTBEAT-STATE.coder.md")
+                .ends_with("Agents/coder/TASK-STATE.coder.md")
         );
+    }
+
+    #[test]
+    fn agents_root_level_detection() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
+        // Root-level core files inside the agents folder.
+        for f in [
+            "Agents/MEMORY.md",
+            "Agents/PERSONA.md",
+            "Agents/HEARTBEAT.md",
+        ] {
+            assert!(
+                r.is_agents_root_level(&VirtualPath::new(f).unwrap()),
+                "{f} should be root-level"
+            );
+        }
+        // Subfolder files are NOT root-level.
+        for f in ["Agents/diary/2026-01-01.md", "Agents/topics/auth/jwt.md"] {
+            assert!(
+                !r.is_agents_root_level(&VirtualPath::new(f).unwrap()),
+                "{f} should not be root-level"
+            );
+        }
+        // Outside the agents folder is never root-level.
+        assert!(!r.is_agents_root_level(&VirtualPath::new("Actions/release.md").unwrap()));
+    }
+
+    #[test]
+    fn agents_root_level_when_agents_is_vault_root() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path(), "", "<agent>.<user>");
+        assert!(r.is_agents_root_level(&VirtualPath::new("MEMORY.md").unwrap()));
+        assert!(!r.is_agents_root_level(&VirtualPath::new("diary/2026-01-01.md").unwrap()));
     }
 
     #[test]

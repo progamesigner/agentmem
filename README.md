@@ -88,7 +88,8 @@ vault/
 ├── Agents/                       ← agent-owned region (scoped, suffixed)
 │   └── coder.alice/
 │       ├── PERSONA.coder.alice.md
-│       ├── HEARTBEAT-STATE.coder.alice.md
+│       ├── MEMORY.coder.alice.md
+│       ├── HEARTBEAT.coder.alice.md
 │       └── diary/2026-05-25.coder.alice.md
 └── Actions/release.md            ← human-owned region (shared, no suffix)
 ```
@@ -107,23 +108,36 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 | `edit_memory_note` | Atomic search/replace; the search string must occur exactly once. |
 | `delete_memory_note` | Delete a single file (never directories). |
 | `load_session_context` | Render the scope's session-context (see [Session context](#session-context)); returns `{ rendered, missing }`. |
-| `evolve_core_persona` | Atomic write to one of those five, selected by `which`. |
-| `update_task_heartbeat` | Atomic write to `HEARTBEAT-STATE.md`. |
-| `append_diary_entry` | Append a timestamped section to `diary/<YYYY-MM-DD>.md`. |
+| `evolve_core_persona` | Atomic write to one of the five foundational files (`persona`/`prompt`/`rules`/`user`/`memory`), selected by `which`. Enforces line caps: `USER.md` ≤ 100, `MEMORY.md` ≤ 200. |
+| `update_task_heartbeat` | Atomic write to `HEARTBEAT.md`. |
+| `append_diary_entry` | Append a timestamped section to `diary/<YYYY-MM-DD>.md`; a newly created file opens with a `# <YYYY-MM-DD>` H1, and an optional `title` makes the heading `## <HH:MM:SS> — <title>`. |
 
 Every tool's input schema includes the scope parameters derived from the active
 scheme; introspect them via the standard MCP `tools/list` call.
 
+Inside the agents folder the root level is **wrapper-only**: the core files
+(`PERSONA.md`, `PROMPT.md`, `RULES.md`, `USER.md`, `MEMORY.md`, `HEARTBEAT.md`)
+are changed only through `evolve_core_persona` / `update_task_heartbeat`.
+`write_memory_note` / `edit_memory_note` / `delete_memory_note` may only target
+paths under a subfolder; a root-level target is rejected with `path_not_permitted`.
+Reads of root files remain allowed.
+
 ## Session context
 
 A **session-context template** weaves the five foundational files
-(`PERSONA`/`PROMPT`/`RULES`/`USER`/`TOOLS`) together with operator prose and an
+(`PERSONA`/`PROMPT`/`RULES`/`USER`/`MEMORY`) together with operator prose and an
 auto-generated memory-tools guide into a single rendered bootstrap. It is an
 ordinary markdown document with `{{…}}` placeholders:
 
-- `{{files.persona}}`, `{{files.prompt}}`, `{{files.rules}}`, `{{files.user}}`, `{{files.tools}}` — the foundational file contents (a missing file renders a sentinel)
+- `{{files.persona}}`, `{{files.prompt}}`, `{{files.rules}}`, `{{files.user}}`, `{{files.memory}}` — the foundational file contents (a missing file renders a sentinel)
 - `{{scope.<key>}}` — a scope value (e.g. `{{scope.agent}}`); `<key>` is any scheme placeholder
-- `{{tools_guide}}` — the server-generated memory-tools guide
+- `{{tools_guide}}` — the server-generated memory-tools guide (the live tool catalogue only)
+
+The compiled-in default template orders the sections `PERSONA → RULES → MEMORY →
+USER → PROMPT → {{tools_guide}}` and embeds a *suggested* (non-enforced) memory
+layout plus the documented line caps. External-tool facts (camera, SSH, etc.)
+belong in `PROMPT.md`. Operators who supply their own template fully control and
+may override that guidance.
 
 The active template is resolved per request, first hit wins:
 

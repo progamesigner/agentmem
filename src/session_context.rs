@@ -26,7 +26,7 @@ pub const FOUNDATIONAL: &[(&str, &str)] = &[
     ("prompt", "PROMPT.md"),
     ("rules", "RULES.md"),
     ("user", "USER.md"),
-    ("tools", "TOOLS.md"),
+    ("memory", "MEMORY.md"),
 ];
 
 /// The per-scope template filename, resolved through the scope suffix mechanism
@@ -45,20 +45,59 @@ const DEFAULT_TEMPLATE: &str = "\
 ## Persona
 {{files.persona}}
 
-## Prompt
-{{files.prompt}}
-
 ## Rules
 {{files.rules}}
+
+## Memory
+{{files.memory}}
 
 ## About the User
 {{files.user}}
 
-## Tool Notes
-{{files.tools}}
+## Prompt
+{{files.prompt}}
 
 ## Memory Tools
 {{tools_guide}}
+
+## Memory Layout (suggested)
+
+The following layout is a suggestion, not a rule. The server enforces only two
+things: core root files are wrapper-only (see below) and the line caps on
+`USER.md` and `MEMORY.md`. Everything else here is guidance you may adapt.
+
+Paths are shown virtually, relative to your agents folder. The server applies
+the per-scope `<agent>.<user>` suffix to leaf filenames automatically; a
+subagent name is a directory segment and the suffix does not nest into it.
+
+Root core files (changed only through the dedicated wrapper tools):
+- `MEMORY.md` — your working-memory index (≤ 200 lines). Its internal structure
+  is up to you; keep it a concise index, not a dumping ground.
+- `RULES.md` — safety boundaries and hard constraints.
+- `PERSONA.md` — your identity, soul, and style.
+- `PROMPT.md` — workflow rules, plus facts about external tools you operate
+  (camera, SSH hosts, and the like).
+- `USER.md` — the user profile (≤ 100 lines).
+- `HEARTBEAT.md` — current task heartbeat.
+
+Subfolders (free-form notes via `write_memory_note`/`edit_memory_note`):
+- `diary/<YYYY-MM-DD>.md` — daily diary.
+- `workspaces/INDEX.md` and `workspaces/<project>/<item>.md` — per-project work.
+- `topics/INDEX.md`, `topics/LOG.md`, and `topics/<topic>/<fact>.md` — durable facts.
+- `skills/<skill>/SKILL.md` and `skills/<skill>/references/<name>.md` — skills.
+- `agents/<subagent>/PROMPT.md` and `agents/<subagent>/<context>.md` — subagents.
+
+How the managed files are written:
+- Diary entries are appended with `append_diary_entry` and read back with
+  `read_memory_note`; do not hand-write them.
+- The task heartbeat is updated through `update_task_heartbeat`, which targets
+  `HEARTBEAT.md`.
+- The core root files (`PERSONA.md`, `PROMPT.md`, `RULES.md`, `USER.md`,
+  `MEMORY.md`) are changed through `evolve_core_persona`. Generic
+  `write_memory_note`/`edit_memory_note`/`delete_memory_note` may only target
+  paths under a subfolder; root-level core files are reserved for the wrappers.
+
+Line caps (enforced on tool writes): `USER.md` ≤ 100 lines, `MEMORY.md` ≤ 200 lines.
 ";
 
 /// The rendered session-context plus the foundational files that were absent.
@@ -258,9 +297,37 @@ mod tests {
             vec![
                 "PROMPT.md".to_string(),
                 "USER.md".to_string(),
-                "TOOLS.md".to_string()
+                "MEMORY.md".to_string()
             ]
         );
+    }
+
+    /// The compiled-in default template documents the suggested layout, the
+    /// tool-managed files, and the line caps.
+    #[test]
+    fn default_template_documents_conventions_and_caps() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        let global = tmp.path().join("AGENT_SESSION_CONTEXT.md");
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "c"), ("user", "a")]),
+        )
+        .unwrap();
+        // Suggested layout with key entries and their roles.
+        assert!(sc.rendered.contains("Memory Layout (suggested)"));
+        assert!(sc.rendered.contains("HEARTBEAT.md"));
+        assert!(sc.rendered.contains("diary/<YYYY-MM-DD>.md"));
+        assert!(sc.rendered.contains("agents/<subagent>/PROMPT.md"));
+        // Tool-managed files.
+        assert!(sc.rendered.contains("append_diary_entry"));
+        assert!(sc.rendered.contains("update_task_heartbeat"));
+        assert!(sc.rendered.contains("evolve_core_persona"));
+        // Documented caps.
+        assert!(sc.rendered.contains("USER.md` ≤ 100 lines"));
+        assert!(sc.rendered.contains("MEMORY.md` ≤ 200 lines"));
     }
 
     /// `{{files.user}}` (file contents) and `{{scope.user}}` (scope value) are

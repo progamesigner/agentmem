@@ -60,6 +60,15 @@ pub enum AgentmemError {
     #[error("path '{virtual_path}' is not permitted under the active policy or visibility filters")]
     PathNotPermitted { virtual_path: String },
 
+    /// A generic write/edit/delete targeted an agents-folder root-level core file.
+    /// Reported with the `path_not_permitted` code; the message names the wrapper
+    /// tool that owns the file.
+    #[error("path '{virtual_path}' is a reserved root-level core file; use {wrapper} instead")]
+    RootPathReserved {
+        virtual_path: String,
+        wrapper: &'static str,
+    },
+
     #[error("write denied: path '{virtual_path}' is in a read-only region under the active policy")]
     WriteDenied { virtual_path: String },
 
@@ -101,6 +110,7 @@ impl AgentmemError {
         match self {
             AgentmemError::PathEscapesRoot { .. } => ErrorCode::PathEscapesRoot,
             AgentmemError::PathNotPermitted { .. } => ErrorCode::PathNotPermitted,
+            AgentmemError::RootPathReserved { .. } => ErrorCode::PathNotPermitted,
             AgentmemError::WriteDenied { .. } => ErrorCode::WriteDenied,
             AgentmemError::MissingScope { .. } => ErrorCode::MissingScope,
             AgentmemError::NotFound { .. } => ErrorCode::NotFound,

@@ -99,15 +99,16 @@ enum Which {
     Prompt,
     Rules,
     User,
-    Tools,
+    Memory,
 }
 
 #[derive(JsonSchema)]
 #[allow(dead_code)]
 struct EvolveFields {
-    /// Which foundational file to replace.
+    /// Which foundational file to replace: one of persona, prompt, rules, user, memory.
     which: Which,
-    /// The full new contents of the selected file.
+    /// The full new contents of the selected file. `user` content must be ≤ 100
+    /// lines and `memory` content ≤ 200 lines.
     content: String,
 }
 
@@ -116,6 +117,16 @@ struct EvolveFields {
 struct ContentOnlyFields {
     /// The content to write.
     content: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct DiaryFields {
+    /// The diary entry body.
+    content: String,
+    /// Optional short title for the entry; when present the heading reads
+    /// `## <HH:MM:SS> — <title>`, otherwise `## <HH:MM:SS>`.
+    title: Option<String>,
 }
 
 /// The agent-facing toolbox: holds the storage layer, the active policy, and the
@@ -306,6 +317,30 @@ impl Toolbox {
         VirtualPath::new(&full)
     }
 
+    /// Reject a generic write/edit/delete that targets an agents-folder
+    /// root-level core file. Such files are reserved for the dedicated wrappers
+    /// (`evolve_core_persona`, `update_task_heartbeat`); the returned error
+    /// carries `path_not_permitted` and names the wrapper to use. A no-op for
+    /// subfolder paths and for paths outside the agents folder.
+    fn reject_if_root_reserved(&self, vpath: &VirtualPath) -> Result<(), AgentmemError> {
+        if !self.storage.resolver().is_agents_root_level(vpath) {
+            return Ok(());
+        }
+        let is_heartbeat = vpath
+            .as_path()
+            .file_name()
+            .is_some_and(|name| name == "HEARTBEAT.md");
+        let wrapper = if is_heartbeat {
+            "update_task_heartbeat"
+        } else {
+            "evolve_core_persona"
+        };
+        Err(AgentmemError::RootPathReserved {
+            virtual_path: vpath.as_str().to_string(),
+            wrapper,
+        })
+    }
+
     /// Map a [`PolicyError`] to the appropriate boundary error for `vpath`.
     fn policy_err(err: PolicyError, vpath: &VirtualPath) -> AgentmemError {
         match err {
@@ -397,6 +432,7 @@ impl Toolbox {
         let scope = self.resolve_scope(args, &["path", "content"])?;
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
         let content = require_str(args, "content")?;
+        self.reject_if_root_reserved(&vpath)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             storage.write_atomic(physical, &content)
         })
@@ -407,6 +443,7 @@ impl Toolbox {
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
         let search = require_str(args, "search_string")?;
         let replace = require_str(args, "replace_string")?;
+        self.reject_if_root_reserved(&vpath)?;
         let resolver = self.storage.resolver();
         let region = resolver.detect_region(&vpath);
         self.policy
@@ -427,6 +464,7 @@ impl Toolbox {
     fn delete_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         let scope = self.resolve_scope(args, &["path"])?;
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
+        self.reject_if_root_reserved(&vpath)?;
         let resolver = self.storage.resolver();
         let region = resolver.detect_region(&vpath);
         self.policy
@@ -459,21 +497,32 @@ impl Toolbox {
     fn evolve_core_persona(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         let scope = self.resolve_scope(args, &["which", "content"])?;
         let which = require_str(args, "which")?;
-        let filename = match which.as_str() {
-            "persona" => "PERSONA.md",
-            "prompt" => "PROMPT.md",
-            "rules" => "RULES.md",
-            "user" => "USER.md",
-            "tools" => "TOOLS.md",
+        // (filename, optional line cap)
+        let (filename, line_cap) = match which.as_str() {
+            "persona" => ("PERSONA.md", None),
+            "prompt" => ("PROMPT.md", None),
+            "rules" => ("RULES.md", None),
+            "user" => ("USER.md", Some(100usize)),
+            "memory" => ("MEMORY.md", Some(200usize)),
             other => {
                 return Err(AgentmemError::InvalidArgument {
                     message: format!(
-                        "which must be one of persona|prompt|rules|user|tools, got '{other}'"
+                        "which must be one of persona|prompt|rules|user|memory, got '{other}'"
                     ),
                 });
             }
         };
         let content = require_str(args, "content")?;
+        if let Some(cap) = line_cap {
+            let lines = content.lines().count();
+            if lines > cap {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!(
+                        "{filename} must not exceed {cap} lines (got {lines}); file left unchanged"
+                    ),
+                });
+            }
+        }
         let vpath = self.agents_vpath(filename)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             storage.write_atomic(physical, &content)
@@ -483,23 +532,28 @@ impl Toolbox {
     fn update_task_heartbeat(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         let scope = self.resolve_scope(args, &["content"])?;
         let content = require_str(args, "content")?;
-        let vpath = self.agents_vpath("HEARTBEAT-STATE.md")?;
+        let vpath = self.agents_vpath("HEARTBEAT.md")?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             storage.write_atomic(physical, &content)
         })
     }
 
     fn append_diary_entry(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["content"])?;
+        let scope = self.resolve_scope(args, &["content", "title"])?;
         let content = require_str(args, "content")?;
         if content.is_empty() {
             return Err(AgentmemError::InvalidArgument {
                 message: "content must not be empty".to_string(),
             });
         }
+        let title = opt_str(args, "title")?;
         let now = Utc::now().with_timezone(&self.timezone);
         let date = now.format("%Y-%m-%d").to_string();
         let time = now.format("%H:%M:%S").to_string();
+        let heading = match title.as_deref() {
+            Some(t) if !t.is_empty() => format!("## {time} — {t}"),
+            _ => format!("## {time}"),
+        };
         let vpath = self.agents_vpath(&format!("diary/{date}.md"))?;
 
         let resolver = self.storage.resolver();
@@ -516,8 +570,8 @@ impl Toolbox {
         let written = self
             .storage
             .read_modify_write(&physical, |current| match current {
-                Some(existing) => format!("{existing}\n## {time}\n{content}\n"),
-                None => format!("## {time}\n{content}\n"),
+                Some(existing) => format!("{existing}\n{heading}\n{content}\n"),
+                None => format!("# {date}\n\n{heading}\n{content}\n"),
             })?;
         Ok(ok_json(json!({ "bytes_written": written })))
     }
@@ -682,18 +736,18 @@ fn build_tools(scheme: &Scheme) -> Vec<Tool> {
         ),
         tool(
             "evolve_core_persona",
-            "Atomically replace one foundational session file selected by the `which` parameter.",
+            "Atomically replace one foundational session file (persona|prompt|rules|user|memory) selected by `which`. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
             merge_schema(scheme, fields_schema::<EvolveFields>()),
         ),
         tool(
             "update_task_heartbeat",
-            "Atomically replace the scope's HEARTBEAT-STATE.md.",
+            "Atomically replace the scope's HEARTBEAT.md.",
             merge_schema(scheme, fields_schema::<ContentOnlyFields>()),
         ),
         tool(
             "append_diary_entry",
-            "Append a timestamped section to today's diary file for the active scope.",
-            merge_schema(scheme, fields_schema::<ContentOnlyFields>()),
+            "Append a timestamped section to today's diary file for the active scope. Accepts an optional `title` for the entry heading.",
+            merge_schema(scheme, fields_schema::<DiaryFields>()),
         ),
     ]
 }
