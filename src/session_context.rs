@@ -42,42 +42,47 @@ const MISSING_SENTINEL: &str = "(not yet recorded — set via evolve_core_person
 const DEFAULT_TEMPLATE: &str = "\
 # Session Context
 
-## Persona
+<PERSONA>
 {{files.persona}}
+</PERSONA>
 
-## Rules
+<RULES>
 {{files.rules}}
+</RULES>
 
-## Memory
+<MEMORY>
 {{files.memory}}
+</MEMORY>
 
-## About the User
+<USER>
 {{files.user}}
+</USER>
 
-## Prompt
+<PROMPT>
 {{files.prompt}}
+</PROMPT>
 
-## Memory Tools
+<AGENTMEM:TOOLS>
 {{tools_guide}}
+</AGENTMEM:TOOLS>
 
-## Memory Layout (suggested)
-
+<AGENTMEM:LAYOUT>
 The following layout is a suggestion, not a rule. The server enforces only two
-things: core root files are wrapper-only (see below) and the line caps on
-`USER.md` and `MEMORY.md`. Everything else here is guidance you may adapt.
+things: core files are wrapper-only (see below) and the line caps on `USER.md`
+and `MEMORY.md`. Everything else here is guidance you may adapt.
 
-Paths are shown virtually, relative to your agents folder. The server applies
-the per-scope `<agent>.<user>` suffix to leaf filenames automatically; a
-subagent name is a directory segment and the suffix does not nest into it.
+A small set of core files are special: they are changed only through their
+dedicated wrapper tools and are bounded by the line caps. Every other path
+behaves like an ordinary filesystem — read, write, and organize it however you
+like with the generic note tools.
 
-Root core files (changed only through the dedicated wrapper tools):
+Core files (changed only through the dedicated wrapper tools):
+- `PERSONA.md` — your identity, soul, and style.
+- `RULES.md` — safety boundaries and hard constraints.
 - `MEMORY.md` — your working-memory index (≤ 200 lines). Its internal structure
   is up to you; keep it a concise index, not a dumping ground.
-- `RULES.md` — safety boundaries and hard constraints.
-- `PERSONA.md` — your identity, soul, and style.
-- `PROMPT.md` — workflow rules, plus facts about external tools you operate
-  (camera, SSH hosts, and the like).
 - `USER.md` — the user profile (≤ 100 lines).
+- `PROMPT.md` — workflow rules, plus facts about external tools you operate.
 - `HEARTBEAT.md` — current task heartbeat.
 
 Subfolders (free-form notes via `write_memory_note`/`edit_memory_note`):
@@ -98,6 +103,7 @@ How the managed files are written:
   paths under a subfolder; root-level core files are reserved for the wrappers.
 
 Line caps (enforced on tool writes): `USER.md` ≤ 100 lines, `MEMORY.md` ≤ 200 lines.
+</AGENTMEM:LAYOUT>
 ";
 
 /// The rendered session-context plus the foundational files that were absent.
@@ -316,8 +322,11 @@ mod tests {
             &scope(&[("agent", "c"), ("user", "a")]),
         )
         .unwrap();
+        // Sections are delimited by tags, not H2 headings.
+        assert!(sc.rendered.contains("<PERSONA>"));
+        assert!(sc.rendered.contains("<AGENTMEM:TOOLS>"));
+        assert!(sc.rendered.contains("<AGENTMEM:LAYOUT>"));
         // Suggested layout with key entries and their roles.
-        assert!(sc.rendered.contains("Memory Layout (suggested)"));
         assert!(sc.rendered.contains("HEARTBEAT.md"));
         assert!(sc.rendered.contains("diary/<YYYY-MM-DD>.md"));
         assert!(sc.rendered.contains("agents/<subagent>/PROMPT.md"));
@@ -328,6 +337,10 @@ mod tests {
         // Documented caps.
         assert!(sc.rendered.contains("USER.md` ≤ 100 lines"));
         assert!(sc.rendered.contains("MEMORY.md` ≤ 200 lines"));
+        // The internal per-scope suffix mechanism is not exposed to the agent;
+        // the layout instead frames core files vs. an ordinary filesystem.
+        assert!(!sc.rendered.contains("suffix"));
+        assert!(sc.rendered.contains("ordinary filesystem"));
     }
 
     /// `{{files.user}}` (file contents) and `{{scope.user}}` (scope value) are
