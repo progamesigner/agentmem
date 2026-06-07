@@ -16,6 +16,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use camino::{Utf8Component, Utf8Path};
 use dashmap::DashMap;
 use ignore::WalkBuilder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::error::AgentmemError;
 use crate::path::{PathResolver, PhysicalPath, VirtualPath};
@@ -46,20 +47,51 @@ impl Cursor {
     }
 }
 
+/// Compile an include-hidden glob list into a single `Gitignore` matcher, rooted
+/// at the vault root. Each pattern is a gitignore-style glob; an entry that
+/// matches a path (or, via `matched_path_or_any_parents`, one of its ancestors)
+/// exempts that path from hidden-segment filtering. An empty list yields a
+/// matcher that matches nothing.
+pub(crate) fn compile_include_globs(
+    root: &Path,
+    patterns: &[String],
+) -> Result<Gitignore, ignore::Error> {
+    let mut builder = GitignoreBuilder::new(root);
+    for pattern in patterns {
+        builder.add_line(None, pattern)?;
+    }
+    builder.build()
+}
+
 /// The on-disk storage layer.
 pub struct Storage {
     resolver: PathResolver,
     honor_ignore_files: bool,
     include_hidden: bool,
+    /// Glob matcher whose matches (path or any parent) exempt a dot-path from
+    /// hidden filtering. Matches nothing when no patterns are configured.
+    include_hidden_globs: Gitignore,
     locks: DashMap<PathBuf, Arc<Mutex<()>>>,
 }
 
 impl Storage {
-    pub fn new(resolver: PathResolver, honor_ignore_files: bool, include_hidden: bool) -> Storage {
+    pub fn new(
+        resolver: PathResolver,
+        honor_ignore_files: bool,
+        include_hidden: bool,
+        include_hidden_globs: &[String],
+    ) -> Storage {
+        // Patterns are validated at config-load time; if compilation somehow
+        // fails here, fall back to an empty matcher (no exemptions) rather than
+        // panicking inside the storage layer.
+        let include_hidden_globs =
+            compile_include_globs(resolver.vault_root(), include_hidden_globs)
+                .unwrap_or_else(|_| Gitignore::empty());
         Storage {
             resolver,
             honor_ignore_files,
             include_hidden,
+            include_hidden_globs,
             locks: DashMap::new(),
         }
     }
@@ -316,7 +348,8 @@ impl Storage {
     }
 
     /// A path is hidden if any segment begins with `.`, except segments that are
-    /// part of the agents-folder prefix (so a `.agents` folder stays visible).
+    /// part of the agents-folder prefix (so a `.agents` folder stays visible) or
+    /// paths exempted by the include-hidden glob list.
     fn is_hidden(&self, rel: &Utf8Path) -> bool {
         let agents = self.resolver.agents_dir();
         let to_check: &Utf8Path = if !agents.as_str().is_empty() && rel.starts_with(agents) {
@@ -324,22 +357,39 @@ impl Storage {
         } else {
             rel
         };
-        to_check
+        let dotted = to_check
             .components()
-            .any(|c| matches!(c, Utf8Component::Normal(s) if s.starts_with('.')))
+            .any(|c| matches!(c, Utf8Component::Normal(s) if s.starts_with('.')));
+        if !dotted {
+            return false;
+        }
+        // Dot-prefixed, so hidden by default — unless an include-hidden glob
+        // matches the path or one of its parents (whole-subtree exemption).
+        !self.is_hidden_exempt(rel)
     }
 
-    /// Whether `rel` (relative to the vault root) is matched by a `.gitignore` or
-    /// `.obsidianignore` rule, assembled from the vault root down to the file's
-    /// parent directory.
+    /// Whether an include-hidden glob matches `rel` (relative to the vault root)
+    /// or any of its parent directories, un-hiding it and its whole subtree.
+    fn is_hidden_exempt(&self, rel: &Utf8Path) -> bool {
+        let abs = self.resolver.vault_root().join(rel.as_str());
+        self.include_hidden_globs
+            .matched_path_or_any_parents(&abs, false)
+            .is_ignore()
+    }
+
+    /// Whether `rel` (relative to the vault root) is matched by a `.ignore`,
+    /// `.gitignore`, or `.obsidianignore` rule, assembled from the vault root
+    /// down to the file's parent directory.
     fn is_ignored(&self, rel: &Utf8Path) -> bool {
-        use ignore::gitignore::GitignoreBuilder;
         let root = self.resolver.vault_root();
         let mut builder = GitignoreBuilder::new(root);
 
-        // Collect ignore files from root down to the file's parent directory.
+        // Collect ignore files from root down to the file's parent directory, so
+        // nested ignore files compose per-directory exactly like `git` (matching
+        // the walker's `WalkBuilder` behaviour).
         let mut dir = root.to_path_buf();
         let add_for = |b: &mut GitignoreBuilder, d: &Path| {
+            b.add(d.join(".ignore"));
             b.add(d.join(".gitignore"));
             b.add(d.join(".obsidianignore"));
         };
@@ -395,12 +445,23 @@ mod tests {
     use camino::Utf8PathBuf;
 
     fn storage(tmp: &TempDir, agents: &str, scheme: &str, honor: bool, hidden: bool) -> Storage {
+        storage_with_globs(tmp, agents, scheme, honor, hidden, &[])
+    }
+
+    fn storage_with_globs(
+        tmp: &TempDir,
+        agents: &str,
+        scheme: &str,
+        honor: bool,
+        hidden: bool,
+        include_hidden_globs: &[String],
+    ) -> Storage {
         let resolver = PathResolver::new(
             tmp.path().canonicalize().unwrap(),
             Utf8PathBuf::from(agents),
             Scheme::parse(scheme).unwrap(),
         );
-        Storage::new(resolver, honor, hidden)
+        Storage::new(resolver, honor, hidden, include_hidden_globs)
     }
 
     fn vp(s: &str) -> VirtualPath {
@@ -549,6 +610,200 @@ mod tests {
         assert!(!strs.iter().any(|s| s.contains("draft.wip.md")));
         assert!(!s.is_visible(&ignored));
         assert!(s.is_visible(&kept));
+    }
+
+    /// All virtual paths visible across both regions, as strings.
+    fn visible_strs(s: &Storage) -> Vec<String> {
+        s.list_visible(
+            "",
+            &[Region::InsideAgentsFolder, Region::OutsideAgentsFolder],
+        )
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().to_string())
+        .collect()
+    }
+
+    /// A `.ignore`-matched file is excluded from listings AND rejected by the
+    /// direct-access check — the visible set and the addressable set agree.
+    #[test]
+    fn dot_ignore_file_excludes_consistently() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("Agents/scratch/.ignore")
+            .write_str("*.md\n")
+            .unwrap();
+        let s = storage(&tmp, "Agents", "", true, false);
+
+        let ignored = s
+            .resolver
+            .resolve("", &vp("Agents/scratch/wip.md"))
+            .unwrap();
+        let kept = s.resolver.resolve("", &vp("Agents/keep.md")).unwrap();
+        s.write_atomic(&ignored, "x").unwrap();
+        s.write_atomic(&kept, "x").unwrap();
+
+        let listed = visible_strs(&s);
+        assert!(!listed.iter().any(|p| p.contains("scratch/wip.md")));
+        assert!(listed.contains(&"Agents/keep.md".to_string()));
+        assert!(!s.is_visible(&ignored));
+        assert!(s.is_visible(&kept));
+    }
+
+    /// Disabling ignore-file enforcement turns off `.ignore` too.
+    #[test]
+    fn dot_ignore_disabled_when_not_honoring() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child(".ignore").write_str("*.wip.md\n").unwrap();
+        let s = storage(&tmp, "Agents", "", false, false);
+
+        let was_ignored = s.resolver.resolve("", &vp("Agents/draft.wip.md")).unwrap();
+        s.write_atomic(&was_ignored, "x").unwrap();
+        assert!(s.is_visible(&was_ignored));
+    }
+
+    /// Nested ignore files compose per-directory like `git`: a rule in a
+    /// subfolder applies only to that subtree, across all three ignore-file
+    /// kinds, on both the listing and direct-access paths.
+    #[test]
+    fn nested_ignore_files_compose_per_directory() {
+        for filename in [".ignore", ".gitignore", ".obsidianignore"] {
+            let tmp = TempDir::new().unwrap();
+            tmp.child(format!("Agents/drafts/{filename}"))
+                .write_str("*.tmp.md\n")
+                .unwrap();
+            let s = storage(&tmp, "Agents", "", true, false);
+
+            let nested = s
+                .resolver
+                .resolve("", &vp("Agents/drafts/wip.tmp.md"))
+                .unwrap();
+            let outside = s.resolver.resolve("", &vp("Agents/keep.tmp.md")).unwrap();
+            s.write_atomic(&nested, "x").unwrap();
+            s.write_atomic(&outside, "x").unwrap();
+
+            let listed = visible_strs(&s);
+            assert!(
+                !listed.iter().any(|p| p.contains("drafts/wip.tmp.md")),
+                "{filename}: nested rule should hide drafts/wip.tmp.md"
+            );
+            assert!(
+                listed.contains(&"Agents/keep.tmp.md".to_string()),
+                "{filename}: rule must not leak outside its subtree"
+            );
+            assert!(!s.is_visible(&nested), "{filename}: direct access agrees");
+            assert!(s.is_visible(&outside));
+        }
+    }
+
+    /// An include-hidden glob un-hides a dot-directory and its whole subtree,
+    /// while unrelated dot-paths stay excluded.
+    #[test]
+    fn include_hidden_glob_unhides_subtree() {
+        let tmp = TempDir::new().unwrap();
+        let s = storage_with_globs(
+            &tmp,
+            "Agents",
+            "",
+            true,
+            false,
+            &[".obsidian/**".to_string()],
+        );
+
+        let app = s.resolver.resolve("", &vp(".obsidian/app.json")).unwrap();
+        let plugin = s
+            .resolver
+            .resolve("", &vp(".obsidian/plugins/x/data.json"))
+            .unwrap();
+        let other = s.resolver.resolve("", &vp(".cache/tmp.md")).unwrap();
+        s.write_atomic(&app, "x").unwrap();
+        s.write_atomic(&plugin, "x").unwrap();
+        s.write_atomic(&other, "x").unwrap();
+
+        assert!(s.is_visible(&app));
+        assert!(s.is_visible(&plugin));
+        assert!(!s.is_visible(&other));
+
+        let listed = visible_strs(&s);
+        assert!(listed.contains(&".obsidian/app.json".to_string()));
+        assert!(listed.contains(&".obsidian/plugins/x/data.json".to_string()));
+        assert!(!listed.iter().any(|p| p.contains(".cache")));
+    }
+
+    /// With no globs configured, every dot-path stays excluded (today's default).
+    #[test]
+    fn empty_include_glob_list_excludes_all_dot_paths() {
+        let tmp = TempDir::new().unwrap();
+        let s = storage(&tmp, "Agents", "", true, false);
+        let hidden = s.resolver.resolve("", &vp(".obsidian/app.json")).unwrap();
+        s.write_atomic(&hidden, "x").unwrap();
+        assert!(!s.is_visible(&hidden));
+    }
+
+    /// `include_hidden = true` makes the glob list a no-op (everything visible).
+    #[test]
+    fn include_hidden_true_makes_globs_a_noop() {
+        let tmp = TempDir::new().unwrap();
+        let s = storage_with_globs(
+            &tmp,
+            "Agents",
+            "",
+            true,
+            true,
+            &[".obsidian/**".to_string()],
+        );
+        let app = s.resolver.resolve("", &vp(".obsidian/app.json")).unwrap();
+        let other = s.resolver.resolve("", &vp(".cache/tmp.md")).unwrap();
+        s.write_atomic(&app, "x").unwrap();
+        s.write_atomic(&other, "x").unwrap();
+        assert!(s.is_visible(&app));
+        assert!(s.is_visible(&other));
+    }
+
+    /// An exempted dot-path is still subject to ignore-file rules unless ignore
+    /// enforcement is disabled.
+    #[test]
+    fn exempted_dot_path_still_honors_ignore_files() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child(".gitignore")
+            .write_str(".obsidian/secret.json\n")
+            .unwrap();
+        let globs = [".obsidian/**".to_string()];
+
+        let s = storage_with_globs(&tmp, "Agents", "", true, false, &globs);
+        let app = s.resolver.resolve("", &vp(".obsidian/app.json")).unwrap();
+        let secret = s
+            .resolver
+            .resolve("", &vp(".obsidian/secret.json"))
+            .unwrap();
+        s.write_atomic(&app, "x").unwrap();
+        s.write_atomic(&secret, "x").unwrap();
+        assert!(s.is_visible(&app));
+        assert!(
+            !s.is_visible(&secret),
+            "ignore rule applies despite exemption"
+        );
+
+        // With enforcement off, the ignored file becomes visible.
+        let s2 = storage_with_globs(&tmp, "Agents", "", false, false, &globs);
+        assert!(s2.is_visible(&secret));
+    }
+
+    /// The agents-folder exemption is independent of the include-hidden glob
+    /// list: a `.agents` folder stays visible even with an unrelated glob set.
+    #[test]
+    fn agents_folder_exemption_unaffected_by_globs() {
+        let tmp = TempDir::new().unwrap();
+        let s = storage_with_globs(
+            &tmp,
+            ".agents",
+            "",
+            true,
+            false,
+            &[".obsidian/**".to_string()],
+        );
+        let note = s.resolver.resolve("", &vp(".agents/notes.md")).unwrap();
+        s.write_atomic(&note, "x").unwrap();
+        assert!(s.is_visible(&note));
     }
 
     /// Concurrent writes to the same diary file are serialised by the per-target

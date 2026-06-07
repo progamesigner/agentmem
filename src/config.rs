@@ -38,6 +38,7 @@ const VAR_HTTP_BEARER: &str = "AGENTMEM_HTTP_BEARER";
 const VAR_TIMEZONE: &str = "AGENTMEM_TIMEZONE";
 const VAR_HONOR_IGNORE: &str = "AGENTMEM_HONOR_IGNORE_FILES";
 const VAR_INCLUDE_HIDDEN: &str = "AGENTMEM_INCLUDE_HIDDEN";
+const VAR_INCLUDE_HIDDEN_GLOBS: &str = "AGENTMEM_INCLUDE_HIDDEN_GLOBS";
 const VAR_LOG: &str = "AGENTMEM_LOG";
 
 /// The selected transport and its parameters.
@@ -77,6 +78,10 @@ pub struct Config {
     pub timezone: Tz,
     pub honor_ignore_files: bool,
     pub include_hidden: bool,
+    /// Gitignore-style glob patterns (relative to the vault root) whose matches —
+    /// and their whole subtree — are exempted from hidden-segment filtering.
+    /// Empty by default. Validated at build time.
+    pub include_hidden_globs: Vec<String>,
     /// The `tracing_subscriber::EnvFilter` directive string.
     pub log_filter: String,
 }
@@ -122,6 +127,10 @@ pub struct Cli {
     /// Include hidden dotfiles (overrides AGENTMEM_INCLUDE_HIDDEN).
     #[arg(long)]
     pub include_hidden: Option<bool>,
+    /// Comma-separated globs whose matches are exempt from hidden filtering
+    /// (overrides AGENTMEM_INCLUDE_HIDDEN_GLOBS).
+    #[arg(long)]
+    pub include_hidden_globs: Option<String>,
     /// Tracing filter directive (overrides AGENTMEM_LOG).
     #[arg(long)]
     pub log: Option<String>,
@@ -169,6 +178,9 @@ impl Cli {
         }
         if let Some(v) = &self.include_hidden {
             m.insert(VAR_INCLUDE_HIDDEN, v.to_string());
+        }
+        if let Some(v) = &self.include_hidden_globs {
+            m.insert(VAR_INCLUDE_HIDDEN_GLOBS, v.clone());
         }
         if let Some(v) = &self.log {
             m.insert(VAR_LOG, v.clone());
@@ -263,6 +275,18 @@ impl Config {
         // --- visibility flags ---
         let honor_ignore_files = parse_bool(get, VAR_HONOR_IGNORE, true)?;
         let include_hidden = parse_bool(get, VAR_INCLUDE_HIDDEN, false)?;
+        // Comma-separated globs; trim, drop empties, then validate by compiling.
+        let include_hidden_globs: Vec<String> = get(VAR_INCLUDE_HIDDEN_GLOBS)
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        crate::storage::compile_include_globs(&root_dir, &include_hidden_globs).map_err(|e| {
+            config_err(format!(
+                "{VAR_INCLUDE_HIDDEN_GLOBS} contains an invalid glob pattern: {e}"
+            ))
+        })?;
 
         // --- logging ---
         let log_filter = get(VAR_LOG)
@@ -279,6 +303,7 @@ impl Config {
             timezone,
             honor_ignore_files,
             include_hidden,
+            include_hidden_globs,
             log_filter,
         })
     }
@@ -313,6 +338,7 @@ impl Config {
              timezone = {tz}\n\
              honor_ignore_files = {ignore}\n\
              include_hidden = {hidden}\n\
+             include_hidden_globs = {hidden_globs}\n\
              log_filter = {log}",
             root = self.root_dir.display(),
             agents = if self.agents_dir.as_str().is_empty() {
@@ -327,6 +353,11 @@ impl Config {
             tz = self.timezone,
             ignore = self.honor_ignore_files,
             hidden = self.include_hidden,
+            hidden_globs = if self.include_hidden_globs.is_empty() {
+                "<none>".to_string()
+            } else {
+                self.include_hidden_globs.join(", ")
+            },
             log = self.log_filter,
         )
     }
@@ -628,5 +659,51 @@ mod tests {
             Transport::Http { bind, .. } => assert_eq!(bind.to_string(), "0.0.0.0:9000"),
             _ => panic!("expected http"),
         }
+    }
+
+    #[test]
+    fn include_hidden_globs_default_empty() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(&tmp, &[])).unwrap();
+        assert!(cfg.include_hidden_globs.is_empty());
+    }
+
+    #[test]
+    fn include_hidden_globs_parsed_and_trimmed() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(
+            &tmp,
+            &[(VAR_INCLUDE_HIDDEN_GLOBS, " .obsidian/** , **/.config , ")],
+        ))
+        .unwrap();
+        assert_eq!(cfg.include_hidden_globs, vec![".obsidian/**", "**/.config"]);
+    }
+
+    #[test]
+    fn include_hidden_globs_invalid_pattern_fails_fast() {
+        let tmp = TempDir::new().unwrap();
+        // An unclosed alternate group is an invalid glob.
+        let err = build(with_root(&tmp, &[(VAR_INCLUDE_HIDDEN_GLOBS, "{a,b")])).unwrap_err();
+        assert!(err.to_string().contains(VAR_INCLUDE_HIDDEN_GLOBS));
+    }
+
+    #[test]
+    fn cli_overrides_env_for_include_hidden_globs() {
+        let tmp = TempDir::new().unwrap();
+        let cli = Cli {
+            root_dir: Some(tmp.path().to_path_buf()),
+            include_hidden_globs: Some(".obsidian/**".to_string()),
+            ..Default::default()
+        };
+        let overrides = cli.as_overrides();
+        let env: HashMap<String, String> = [(
+            VAR_INCLUDE_HIDDEN_GLOBS.to_string(),
+            ".cache/**".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let cfg =
+            Config::build(&|k| overrides.get(k).cloned().or_else(|| env.get(k).cloned())).unwrap();
+        assert_eq!(cfg.include_hidden_globs, vec![".obsidian/**"]);
     }
 }

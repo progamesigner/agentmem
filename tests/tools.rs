@@ -23,7 +23,7 @@ fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox
         Utf8PathBuf::from(agents),
         Scheme::parse(scheme).unwrap(),
     );
-    let storage = Storage::new(resolver, true, false);
+    let storage = Storage::new(resolver, true, false, &[]);
     Toolbox::new(
         storage,
         policy,

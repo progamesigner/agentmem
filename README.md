@@ -19,8 +19,8 @@ works well for it).
   enforces a single server-wide policy across two regions (inside / outside the
   agents folder).
 - Writes atomically (temp-file + fsync + rename), prevents path traversal, honours
-  `.gitignore`/`.obsidianignore` and hidden-file filters, and keeps all logs on
-  stderr.
+  `.ignore`/`.gitignore`/`.obsidianignore` (nested, per-directory) and hidden-file
+  filters, and keeps all logs on stderr.
 
 See [`docs/security.md`](docs/security.md) for the trust model.
 
@@ -61,8 +61,9 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_HTTP_BIND` | `127.0.0.1:8000` | HTTP bind address (http transport only). |
 | `AGENTMEM_HTTP_BEARER` | *(unset)* | If set, `POST/GET /mcp` requires `Authorization: Bearer <token>`. Unset → unauthenticated (a startup `WARN` is logged). |
 | `AGENTMEM_TIMEZONE` | `UTC` | IANA timezone used to date diary entries. |
-| `AGENTMEM_HONOR_IGNORE_FILES` | `true` | Honour `.gitignore` / `.obsidianignore` for list and direct addressing. Strict boolean (`true`/`false`). |
+| `AGENTMEM_HONOR_IGNORE_FILES` | `true` | Honour `.ignore` / `.gitignore` / `.obsidianignore` (nested, composed per-directory like `git`) for list and direct addressing. Strict boolean (`true`/`false`). |
 | `AGENTMEM_INCLUDE_HIDDEN` | `false` | Include dotfiles/dot-directories. Strict boolean. |
+| `AGENTMEM_INCLUDE_HIDDEN_GLOBS` | *(empty)* | Comma-separated gitignore-style globs (relative to the vault root) whose matches — and their whole subtree — are exempt from hidden filtering while other dotfiles stay excluded. E.g. `.obsidian/**,**/.config`. Ignore-file rules still apply unless also disabled. |
 | `AGENTMEM_LOG` | `warn,agentmem=info` | `tracing` env-filter directive. Logs always go to stderr. |
 
 ### VFS scheme

@@ -244,7 +244,7 @@ mod tests {
             Utf8PathBuf::from("Agents"),
             Scheme::parse(scheme).unwrap(),
         );
-        Storage::new(resolver, true, false)
+        Storage::new(resolver, true, false, &[])
     }
 
     fn scope(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

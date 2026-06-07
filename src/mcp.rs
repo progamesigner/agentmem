@@ -48,6 +48,7 @@ impl AgentmemServer {
             config.resolver(),
             config.honor_ignore_files,
             config.include_hidden,
+            &config.include_hidden_globs,
         );
         let toolbox = Toolbox::new(
             storage,

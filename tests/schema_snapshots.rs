@@ -22,7 +22,7 @@ fn schemas_for(scheme: &str) -> Value {
         Utf8PathBuf::from("Agents"),
         Scheme::parse(scheme).unwrap(),
     );
-    let storage = Storage::new(resolver, true, false);
+    let storage = Storage::new(resolver, true, false, &[]);
     let toolbox = Toolbox::new(
         storage,
         Policy::Namespaced,
