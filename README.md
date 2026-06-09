@@ -145,6 +145,11 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_INCLUDE_HIDDEN` | `false` | Include dotfiles/dot-directories. Strict boolean. |
 | `AGENTMEM_INCLUDE_HIDDEN_GLOBS` | *(empty)* | Comma-separated gitignore-style globs (relative to the vault root) whose matches — and their whole subtree — are exempt from hidden filtering while other dotfiles stay excluded. E.g. `.obsidian/**,**/.config`. Ignore-file rules still apply unless also disabled. |
 | `AGENTMEM_LOG` | `warn,agentmem=info` | `tracing` env-filter directive. Logs always go to stderr. |
+| `AGENTMEM_RECALL_BACKEND` | `simple` | Content-recall backend: `simple` (case-insensitive substring + regex), `tantivy` (BM25 ranking + frontmatter property filters; requires the `recall-tantivy` build feature, else falls back to `simple`), or `off` (no `recall_memory_notes` tool). |
+| `AGENTMEM_RECALL_WATCH_DEBOUNCE_MS` | `500` | Filesystem-watcher debounce window for external edits. |
+| `AGENTMEM_RECALL_REGEX_SCAN_BYTES` | `67108864` | Byte cap on a regex-only recall scan before it truncates (the result is flagged). |
+| `AGENTMEM_RECALL_MAX_RESIDENT_SCOPES` | `256` | Cap on resident per-scope indexes before idle ones are evicted (they rebuild on next use). |
+| `AGENTMEM_RECALL_FRESHNESS_MS` | `2000` | How long an index stays fresh before a query re-runs the stat-diff reconcile (the watcher can mark it dirty sooner). |
 
 ### VFS scheme
 
@@ -193,9 +198,40 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 | `evolve_core_persona` | Atomic write to one of the five foundational files (`persona`/`prompt`/`rules`/`user`/`memory`), selected by `which`. Enforces line caps: `USER.md` ≤ 100, `MEMORY.md` ≤ 200. |
 | `update_task_heartbeat` | Atomic write to `HEARTBEAT.md`. |
 | `append_diary_entry` | Append a timestamped section to `diary/<YYYY-MM-DD>.md`; a newly created file opens with a `# <YYYY-MM-DD>` H1, and an optional `title` makes the heading `## <HH:MM:SS> — <title>`. |
+| `recall_memory_notes` | Search notes by content within the caller's visible set; returns ranked `{ path, score (0–1), snippets }`. Supply at least one of `query` (full-text), `regex`, or `filters` (frontmatter properties). Paginated like `list_memory_notes`. Present unless `AGENTMEM_RECALL_BACKEND=off`. |
 
 Every tool's input schema includes the scope parameters derived from the active
 scheme; introspect them via the standard MCP `tools/list` call.
+
+### Recall
+
+`recall_memory_notes` finds notes by content so an agent need not list-and-read to
+locate them. It is backed by an **in-memory** index, the way Obsidian works —
+nothing is written to disk; the index is built eagerly at startup, updated
+synchronously on the server's own writes, and reconciled against external edits by
+a filesystem watcher with a stat-diff backstop. The index is disposable: delete
+the process and it rebuilds from the vault.
+
+Isolation is **structural**: each scope has its own in-memory index plus one
+shared-region index, so a query opens only the caller's index and (policy
+permitting) the shared one — another scope's content is unreachable, not merely
+filtered.
+
+Two backends, selected by `AGENTMEM_RECALL_BACKEND`:
+
+- **`simple`** (default) — case-insensitive substring `query` and `regex`. No
+  ranking beyond match count; frontmatter property `filters` return `unsupported`.
+- **`tantivy`** — BM25-ranked full-text, snippet generation, and frontmatter
+  property `filters` (`eq`, `contains`, `exists`, numeric/lexical comparisons).
+  Requires building with the feature; otherwise the server logs a fallback to
+  `simple`:
+
+  ```sh
+  cargo build --release --features recall-tantivy
+  ```
+
+Cross-index scores are normalized to 0–1 per index before merging. On a large
+vault the eager cold build is gated by `GET /readyz` (see [Container image](#container-image)); a regex-only query is byte-capped and flags truncation in its result.
 
 Inside the agents folder the root level is **wrapper-only**: the core files
 (`PERSONA.md`, `PROMPT.md`, `RULES.md`, `USER.md`, `MEMORY.md`, `HEARTBEAT.md`)

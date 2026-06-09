@@ -125,6 +125,24 @@ Set `AGENTMEM_INCLUDE_HIDDEN=true` and/or `AGENTMEM_HONOR_IGNORE_FILES=false` wh
 an operator genuinely wants the agent to see hidden or ignored files. Both default
 to the conservative setting.
 
+## Recall index isolation
+
+Content recall (`recall_memory_notes`) is backed by **per-scope in-memory indexes
+plus one shared-region index** — never a single combined index. A scope's notes
+live only in that scope's index, and a query opens **only** the caller's own-scope
+index plus (when the policy permits reading the shared region) the shared index.
+Cross-scope recall is therefore **structurally impossible**, not merely filtered:
+there is no index that holds two scopes' content, so no filter bug can leak one
+scope's notes — paths, snippets, or scores — into another's results.
+
+Indexes are seeded from the same visibility walk as `list_memory_notes`, so hidden
+and `.gitignore`/`.obsidianignore`-excluded notes never enter any index and can
+never surface as a recall hit. The index is held entirely in memory; nothing is
+written to disk, so it never appears in the vault, in git, or in a listing.
+
+Snippets pass through the same own-scope suffix strip as the read path, so a
+returned fragment never exposes another scope's filename suffix.
+
 ## Error hygiene
 
 Internal errors are mapped at the MCP boundary into a human-readable message plus
