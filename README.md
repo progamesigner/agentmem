@@ -38,7 +38,7 @@ and `x86_64-pc-windows-msvc` are attached to each tagged release.
 
 A minimal multi-arch image (`linux/amd64`, `linux/arm64`) is published to the
 GitHub Container Registry on every tagged release. It is a statically linked
-binary on `scratch` (~8 MB, no shell or OS userland) running as a non-root user.
+binary on `scratch` (no shell or OS userland) running as a non-root user.
 
 ```sh
 docker pull ghcr.io/progamesigner/agentmem:latest
@@ -46,6 +46,12 @@ docker pull ghcr.io/progamesigner/agentmem:latest
 
 Tags per release: `:<version>` (e.g. `:0.1.0`), the moving `:latest`, and an
 immutable `:sha-<gitsha>`.
+
+The published image is built with the [tantivy recall backend](#recall) and
+defaults `AGENTMEM_RECALL_BACKEND=tantivy`, so BM25 recall works out of the box;
+set `AGENTMEM_RECALL_BACKEND=simple` (or `off`) to opt out. The lightweight
+`simple` backend is not published as an image — build it from source
+(`cargo build`) or use a [release binary](#install).
 
 Run it with a vault mounted at `/vault` (the image sets `AGENTMEM_ROOT_DIR=/vault`
 and binds the HTTP transport to `0.0.0.0:8000`):

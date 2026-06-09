@@ -28,9 +28,15 @@ RUN rustup target add "$(cat /tmp/triple)"
 # (and pre-create the vault mountpoint) in the same layer so both persist.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+
+# Optional cargo features for the build, e.g. CARGO_FEATURES=recall-tantivy.
+# Empty (the default) builds the lightweight `simple` backend; declared here so
+# toggling it does not invalidate the toolchain layers above.
+ARG CARGO_FEATURES=""
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo zigbuild --release --target "$(cat /tmp/triple)" \
+        ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} \
  && cp "target/$(cat /tmp/triple)/release/agentmem" /agentmem \
  && mkdir -p /vault
 
@@ -47,12 +53,19 @@ COPY --from=builder --chown=65532:65532 /vault /vault
 # uid:gid works without /etc/passwd.
 USER 65532:65532
 
+# Recall backend default baked into the image. Defaults to `simple` so a plain
+# `docker build .` matches the lightweight binary; the published image overrides
+# it to `tantivy` (built with CARGO_FEATURES=recall-tantivy). Setting `tantivy`
+# without that feature is harmless — the engine falls back to `simple`.
+ARG AGENTMEM_RECALL_BACKEND=simple
+
 # AGENTMEM_ROOT_DIR is required and canonicalised at startup — point it at the
 # volume. Bind HTTP to all interfaces; the built-in default (127.0.0.1) is
 # unreachable from outside the container.
 ENV AGENTMEM_ROOT_DIR=/vault \
     AGENTMEM_TRANSPORT=http \
-    AGENTMEM_HTTP_BIND=0.0.0.0:8000
+    AGENTMEM_HTTP_BIND=0.0.0.0:8000 \
+    AGENTMEM_RECALL_BACKEND=${AGENTMEM_RECALL_BACKEND}
 
 VOLUME ["/vault"]
 EXPOSE 8000

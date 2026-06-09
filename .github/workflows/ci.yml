@@ -139,6 +139,9 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         context: .
+        build-args: |
+          CARGO_FEATURES=recall-tantivy
+          AGENTMEM_RECALL_BACKEND=tantivy
         platforms: linux/amd64
         load: true
         tags: agentmem:smoke-amd64
@@ -149,6 +152,9 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         context: .
+        build-args: |
+          CARGO_FEATURES=recall-tantivy
+          AGENTMEM_RECALL_BACKEND=tantivy
         platforms: linux/arm64
         load: true
         tags: agentmem:smoke-arm64
@@ -176,6 +182,9 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         context: .
+        build-args: |
+          CARGO_FEATURES=recall-tantivy
+          AGENTMEM_RECALL_BACKEND=tantivy
         platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ steps.meta.outputs.tags }}
