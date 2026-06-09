@@ -85,6 +85,16 @@ Core files (changed only through the dedicated wrapper tools):
 - `PROMPT.md` — workflow rules, plus facts about external tools you operate.
 - `HEARTBEAT.md` — current task heartbeat.
 
+Addressing: every path below is shown relative to the agents folder. The wrapper
+tools (`append_diary_entry`, `evolve_core_persona`, `update_task_heartbeat`) add
+your agents-folder name for you. The generic note tools (`write_memory_note`,
+`edit_memory_note`, `delete_memory_note`, `read_memory_note`) take the full path
+from the vault root, so you must prepend your agents-folder name yourself — e.g.
+when the agents folder is `Agents`, write a topic note as
+`Agents/topics/<topic>/<fact>.md`, not `topics/<topic>/<fact>.md`. A path without
+that leading segment lands outside the agents folder, where most policies are
+read-only.
+
 Subfolders (free-form notes via `write_memory_note`/`edit_memory_note`):
 - `diary/<YYYY-MM-DD>.md` — daily diary.
 - `workspaces/INDEX.md` and `workspaces/<project>/<item>.md` — per-project work.
@@ -350,6 +360,10 @@ mod tests {
         // Documented caps.
         assert!(sc.rendered.contains("USER.md` ≤ 100 lines"));
         assert!(sc.rendered.contains("MEMORY.md` ≤ 200 lines"));
+        // Path-addressing rule for the generic tools, with a worked example.
+        assert!(sc.rendered.contains("relative to the agents folder"));
+        assert!(sc.rendered.contains("prepend your agents-folder name"));
+        assert!(sc.rendered.contains("Agents/topics/<topic>/<fact>.md"));
         // The internal per-scope suffix mechanism is not exposed to the agent;
         // the layout instead frames core files vs. an ordinary filesystem.
         assert!(!sc.rendered.contains("suffix"));
