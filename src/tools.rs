@@ -1,5 +1,6 @@
 //! The agent-facing tool surface: schema generation, scope extraction, and the
-//! nine tool handlers.
+//! tool handlers (the nine memory-note tools plus `recall_memory_notes` when the
+//! recall backend is enabled).
 //!
 //! Each tool's input schema is assembled at startup by merging the
 //! scheme-derived scope fields (see [`crate::scheme::Scheme::to_json_schema`])
@@ -10,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::Utc;
 use chrono_tz::Tz;
@@ -20,8 +22,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::error::AgentmemError;
-use crate::path::VirtualPath;
-use crate::policy::{Policy, PolicyError};
+use crate::path::{PhysicalPath, VirtualPath};
+use crate::policy::{Policy, PolicyError, Region};
+use crate::recall::{FilterOp, PropertyFilter, RecallEngine, RecallQuery};
 use crate::scheme::Scheme;
 use crate::storage::{Cursor, Storage};
 
@@ -129,6 +132,51 @@ struct DiaryFields {
     title: Option<String>,
 }
 
+/// The comparison a frontmatter property filter applies.
+#[derive(JsonSchema, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+enum FilterOpField {
+    Exists,
+    Eq,
+    Contains,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+}
+
+/// One frontmatter property predicate (tantivy backend only).
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct PropertyFilterField {
+    /// The frontmatter property key.
+    key: String,
+    /// The comparison: exists, eq, contains, gt, lt, ge, le.
+    op: FilterOpField,
+    /// The value to compare against (omitted for `exists`).
+    value: Option<String>,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct RecallFields {
+    /// Full-text query. On the simple backend this is a case-insensitive
+    /// substring match; on the tantivy backend it is BM25-ranked.
+    query: Option<String>,
+    /// Regular-expression query matched over note content.
+    regex: Option<String>,
+    /// Frontmatter property filters. Requires the tantivy backend; rejected with
+    /// `unsupported` on the simple backend.
+    filters: Option<Vec<PropertyFilterField>>,
+    /// Optional virtual-path prefix, relative to the agents folder, to filter by.
+    path_prefix: Option<String>,
+    /// Maximum number of hits to return (default 200, maximum 1000).
+    limit: Option<u64>,
+    /// Opaque pagination cursor returned by a previous call.
+    cursor: Option<String>,
+}
+
 /// The agent-facing toolbox: holds the storage layer, the active policy, and the
 /// configured timezone, and answers `tools/list` and `tools/call`.
 pub struct Toolbox {
@@ -138,26 +186,37 @@ pub struct Toolbox {
     tools: Vec<Tool>,
     /// Absolute path to the global session-context template file (may not exist).
     session_context_template_file: PathBuf,
+    /// The recall engine, present unless `AGENTMEM_RECALL_BACKEND=off`.
+    recall: Option<Arc<RecallEngine>>,
 }
 
 impl Toolbox {
     /// Build the toolbox and precompute every tool's input schema for the active
-    /// scheme.
+    /// scheme. The `recall_memory_notes` tool is advertised only when `recall` is
+    /// `Some` (i.e. the backend is not `off`).
     pub fn new(
         storage: Storage,
         policy: Policy,
         timezone: Tz,
         session_context_template_file: PathBuf,
+        recall: Option<Arc<RecallEngine>>,
     ) -> Toolbox {
         let scheme = storage.resolver().scheme().clone();
-        let tools = build_tools(&scheme);
+        let tools = build_tools(&scheme, recall.is_some());
         Toolbox {
             storage,
             policy,
             timezone,
             tools,
             session_context_template_file,
+            recall,
         }
+    }
+
+    /// The recall engine handle, for the server's warm-up, watcher start, and the
+    /// `GET /readyz` probe.
+    pub fn recall_engine(&self) -> Option<Arc<RecallEngine>> {
+        self.recall.clone()
     }
 
     /// The advertised tool list for `tools/list`.
@@ -183,9 +242,18 @@ impl Toolbox {
             "evolve_core_persona" => self.evolve_core_persona(args),
             "update_task_heartbeat" => self.update_task_heartbeat(args),
             "append_diary_entry" => self.append_diary_entry(args),
+            "recall_memory_notes" if self.recall.is_some() => self.recall_memory_notes(args),
             _ => return None,
         };
         Some(result)
+    }
+
+    /// Notify the recall engine of the server's own write so its in-memory index
+    /// updates synchronously. A no-op when recall is disabled.
+    fn recall_on_write(&self, scope: &str, region: Region, physical: &PhysicalPath) {
+        if let Some(engine) = &self.recall {
+            engine.on_write(scope, region, physical);
+        }
     }
 
     // --- scope + argument helpers ---
@@ -498,6 +566,7 @@ impl Toolbox {
         let replaced = self
             .storage
             .edit_search_replace(&physical, &search, &replace)?;
+        self.recall_on_write(&scope, region, &physical);
         Ok(ok_json(json!({ "chars_replaced": replaced })))
     }
 
@@ -619,6 +688,7 @@ impl Toolbox {
                 Some(existing) => format!("{existing}\n{heading}\n{content}\n"),
                 None => format!("# {date}\n\n{heading}\n{content}\n"),
             })?;
+        self.recall_on_write(&scope, region, &physical);
         Ok(ok_json(json!({ "bytes_written": written })))
     }
 
@@ -641,8 +711,127 @@ impl Toolbox {
             });
         }
         let written = op(&physical, &self.storage)?;
+        self.recall_on_write(scope, region, &physical);
         Ok(ok_json(json!({ "bytes_written": written })))
     }
+
+    fn recall_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let engine = self
+            .recall
+            .as_ref()
+            .expect("recall_memory_notes dispatched only when recall is enabled");
+        let scope = self.resolve_scope(
+            args,
+            &[
+                "query",
+                "regex",
+                "filters",
+                "path_prefix",
+                "limit",
+                "cursor",
+            ],
+        )?;
+
+        let text = opt_str(args, "query")?;
+        let regex = opt_str(args, "regex")?;
+        let filters = parse_filters(args)?;
+        let path_prefix = opt_str(args, "path_prefix")?;
+        if text.is_none() && regex.is_none() && filters.is_empty() {
+            return Err(AgentmemError::InvalidArgument {
+                message: "at least one of query, regex, or filters is required".to_string(),
+            });
+        }
+        let limit = match opt_u64(args, "limit")? {
+            Some(n) if n > MAX_LIMIT => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!("limit must not exceed {MAX_LIMIT}"),
+                });
+            }
+            Some(n) => n.max(1),
+            None => DEFAULT_LIMIT,
+        };
+        let offset = match opt_str(args, "cursor")? {
+            Some(c) => Cursor::decode(&c)?,
+            None => 0,
+        };
+
+        let regions = self.policy.list_visible_regions(self.scheme().is_empty());
+        let query = RecallQuery {
+            text,
+            regex,
+            filters,
+            path_prefix,
+            limit,
+            offset,
+        };
+        let results = engine.recall(&scope, &regions, &query)?;
+
+        let hits: Vec<Value> = results
+            .hits
+            .into_iter()
+            .map(|h| json!({ "path": h.path, "score": h.score, "snippets": h.snippets }))
+            .collect();
+        Ok(ok_json(json!({
+            "hits": hits,
+            "next_cursor": results.next_cursor,
+            "truncated": results.truncated,
+        })))
+    }
+}
+
+/// Parse the optional `filters` argument into [`PropertyFilter`]s.
+fn parse_filters(args: &JsonObject) -> Result<Vec<PropertyFilter>, AgentmemError> {
+    let raw = match args.get("filters") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(a)) => a,
+        Some(_) => {
+            return Err(AgentmemError::InvalidArgument {
+                message: "argument 'filters' must be an array".to_string(),
+            });
+        }
+    };
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| AgentmemError::InvalidArgument {
+                message: "each filter must be an object with 'key' and 'op'".to_string(),
+            })?;
+        let key = match obj.get("key") {
+            Some(Value::String(s)) if !s.is_empty() => s.clone(),
+            _ => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "each filter must have a non-empty string 'key'".to_string(),
+                });
+            }
+        };
+        let op = match obj.get("op").and_then(Value::as_str) {
+            Some("exists") => FilterOp::Exists,
+            Some("eq") => FilterOp::Eq,
+            Some("contains") => FilterOp::Contains,
+            Some("gt") => FilterOp::Gt,
+            Some("lt") => FilterOp::Lt,
+            Some("ge") => FilterOp::Ge,
+            Some("le") => FilterOp::Le,
+            _ => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "filter 'op' must be one of exists|eq|contains|gt|lt|ge|le"
+                        .to_string(),
+                });
+            }
+        };
+        let value = match obj.get("value") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(_) => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "filter 'value' must be a string".to_string(),
+                });
+            }
+        };
+        out.push(PropertyFilter { key, op, value });
+    }
+    Ok(out)
 }
 
 // --- free helpers ---
@@ -747,9 +936,10 @@ fn tool(name: &'static str, description: &'static str, schema: JsonObject) -> To
     Tool::new(name, description, schema)
 }
 
-/// Assemble the full nine-tool list for a given scheme.
-fn build_tools(scheme: &Scheme) -> Vec<Tool> {
-    vec![
+/// Assemble the tool list for a given scheme. The `recall_memory_notes` tool is
+/// appended only when `recall_enabled`.
+fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
+    let mut tools = vec![
         tool(
             "list_memory_notes",
             "List the virtual paths of memory notes visible to the given scope, with pagination.",
@@ -795,5 +985,13 @@ fn build_tools(scheme: &Scheme) -> Vec<Tool> {
             "Append a timestamped section to today's diary file for the active scope. Accepts an optional `title` for the entry heading.",
             merge_schema(scheme, fields_schema::<DiaryFields>()),
         ),
-    ]
+    ];
+    if recall_enabled {
+        tools.push(tool(
+            "recall_memory_notes",
+            "Search memory notes by content within the caller's visible set. Returns ranked hits as { path, score (0-1), snippets }. Supply at least one of `query` (full-text), `regex`, or `filters` (frontmatter properties; tantivy backend only). Paginated like list_memory_notes.",
+            merge_schema(scheme, fields_schema::<RecallFields>()),
+        ));
+    }
+    tools
 }

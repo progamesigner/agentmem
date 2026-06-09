@@ -50,14 +50,45 @@ impl AgentmemServer {
             config.include_hidden,
             &config.include_hidden_globs,
         );
+        // The recall engine reads through its own `Storage` view (it never writes,
+        // so it needs no share of the write-lock map). `None` when recall is off.
+        let recall = {
+            let engine_storage = Arc::new(Storage::new(
+                config.resolver(),
+                config.honor_ignore_files,
+                config.include_hidden,
+                &config.include_hidden_globs,
+            ));
+            crate::recall::RecallEngine::new(engine_storage, config.recall.clone()).map(Arc::new)
+        };
         let toolbox = Toolbox::new(
             storage,
             config.policy,
             config.timezone,
             config.session_context_template_file.clone(),
+            recall,
         );
         AgentmemServer {
             toolbox: Arc::new(toolbox),
+        }
+    }
+
+    /// `true` when the server is ready to serve recall traffic — backs `GET
+    /// /readyz`. When recall is disabled the server is ready as soon as the
+    /// process is up; otherwise readiness waits for the eager index build.
+    pub fn recall_ready(&self) -> bool {
+        self.toolbox
+            .recall_engine()
+            .is_none_or(|engine| engine.is_ready())
+    }
+
+    /// Start the recall filesystem watcher and kick off the eager index build in
+    /// the background, so liveness stays up and `GET /readyz` flips green only once
+    /// every index is built. A no-op when recall is disabled.
+    pub fn spawn_recall_warmup(&self) {
+        if let Some(engine) = self.toolbox.recall_engine() {
+            engine.start_watcher();
+            tokio::task::spawn_blocking(move || engine.warm());
         }
     }
 

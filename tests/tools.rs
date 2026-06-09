@@ -5,9 +5,14 @@
 //! handler uses — so each scenario exercises scope extraction, path resolution,
 //! policy gating, visibility filtering, and storage end to end.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use agentmem::AgentmemError;
+use agentmem::config::{RecallBackendKind, RecallConfig};
 use agentmem::path::PathResolver;
 use agentmem::policy::Policy;
+use agentmem::recall::RecallEngine;
 use agentmem::scheme::Scheme;
 use agentmem::storage::Storage;
 use agentmem::tools::Toolbox;
@@ -16,6 +21,34 @@ use camino::Utf8PathBuf;
 use chrono_tz::Tz;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
+
+/// A toolbox with the `simple` recall backend enabled over the same vault.
+fn recall_toolbox(tmp: &TempDir) -> Toolbox {
+    let mk = || {
+        PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        )
+    };
+    let storage = Storage::new(mk(), true, false, &[]);
+    let config = RecallConfig {
+        backend: RecallBackendKind::Simple,
+        watch_debounce: Duration::ZERO,
+        regex_scan_byte_cap: usize::MAX,
+        max_resident_scopes: 256,
+        freshness: Duration::ZERO,
+    };
+    let recall =
+        RecallEngine::new(Arc::new(Storage::new(mk(), true, false, &[])), config).map(Arc::new);
+    Toolbox::new(
+        storage,
+        Policy::Namespaced,
+        Tz::UTC,
+        tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        recall,
+    )
+}
 
 fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox {
     let resolver = PathResolver::new(
@@ -29,6 +62,7 @@ fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox
         policy,
         Tz::UTC,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        None,
     )
 }
 
@@ -1195,5 +1229,98 @@ fn empty_scheme_requires_no_scope_args() {
             json!({"agent":"coder","path":"Agents/topics/n.md","content":"x"}),
         ),
         "invalid_argument",
+    );
+}
+
+// --- recall_memory_notes ---
+
+#[test]
+fn recall_finds_a_written_note_by_content() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"coder","user":"alice","path":"Agents/topics/rust.md","content":"the borrow checker enforces ownership"}),
+    )
+    .unwrap();
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"coder","user":"alice","query":"borrow"}),
+    ));
+    let hits = out["hits"].as_array().unwrap();
+    assert!(hits.iter().any(|h| h["path"] == "Agents/topics/rust.md"));
+    let top = &hits[0];
+    assert!(top["score"].as_f64().unwrap() > 0.0 && top["score"].as_f64().unwrap() <= 1.0);
+    assert!(!top["snippets"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn recall_does_not_cross_scope_boundaries() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"coder","user":"alice","path":"Agents/topics/a.md","content":"shared keyword zebra"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"coder","user":"bob","path":"Agents/topics/b.md","content":"shared keyword zebra"}),
+    )
+    .unwrap();
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"coder","user":"alice","query":"zebra"}),
+    ));
+    let hits = out["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0]["path"], "Agents/topics/a.md");
+}
+
+#[test]
+fn recall_requires_a_query_regex_or_filter() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "recall_memory_notes",
+            json!({"agent":"coder","user":"alice"}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn recall_property_filters_are_unsupported_on_simple_backend() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "recall_memory_notes",
+            json!({
+                "agent":"coder","user":"alice",
+                "filters":[{"key":"tag","op":"eq","value":"rust"}]
+            }),
+        ),
+        "unsupported",
+    );
+}
+
+#[test]
+fn recall_tool_absent_when_backend_off() {
+    // The default `toolbox` helper builds with recall disabled (None).
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert!(
+        tb.list_tools()
+            .iter()
+            .all(|t| t.name != "recall_memory_notes")
     );
 }
