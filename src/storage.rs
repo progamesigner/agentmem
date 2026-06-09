@@ -47,6 +47,66 @@ impl Cursor {
     }
 }
 
+/// One visible note in a [`LinkIndex`]: its clean, vault-root-relative path with
+/// the `.md` extension stripped, and the region it lives in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkEntry {
+    /// Clean path, extension stripped (e.g. `Agents/topics/rust`, `Actions/release`).
+    pub clean_path: String,
+    /// Whether the note is in the caller's own scope or the shared region.
+    pub region: Region,
+}
+
+/// An index of the caller's visible notes, keyed by clean basename (final path
+/// segment with the `.md` extension stripped), for resolving `[[wikilink]]`
+/// targets the way Obsidian does. Only notes that pass own-scope filtering and
+/// the visibility filters appear here.
+#[derive(Debug, Default)]
+pub struct LinkIndex {
+    by_basename: std::collections::BTreeMap<String, Vec<LinkEntry>>,
+}
+
+impl LinkIndex {
+    /// Record one visible note from its clean vault-root-relative virtual path.
+    pub(crate) fn insert(&mut self, clean_vpath: &str, region: Region) {
+        let clean_path = clean_vpath
+            .strip_suffix(".md")
+            .unwrap_or(clean_vpath)
+            .to_string();
+        let basename = clean_path
+            .rsplit_once('/')
+            .map(|(_, name)| name)
+            .unwrap_or(&clean_path)
+            .to_string();
+        self.by_basename
+            .entry(basename)
+            .or_default()
+            .push(LinkEntry { clean_path, region });
+    }
+
+    /// Sort each basename's entries by clean path for deterministic resolution
+    /// and rendering, regardless of filesystem walk order.
+    fn sort(&mut self) {
+        for entries in self.by_basename.values_mut() {
+            entries.sort_by(|a, b| a.clean_path.cmp(&b.clean_path));
+        }
+    }
+
+    /// All visible notes sharing `basename` (its final segment), in deterministic
+    /// order.
+    pub fn entries_for_basename(&self, basename: &str) -> &[LinkEntry] {
+        self.by_basename
+            .get(basename)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Every indexed entry, across all basenames.
+    pub fn all_entries(&self) -> impl Iterator<Item = &LinkEntry> {
+        self.by_basename.values().flatten()
+    }
+}
+
 /// Compile an include-hidden glob list into a single `Gitignore` matcher, rooted
 /// at the vault root. Each pattern is a gitignore-style glob; an entry that
 /// matches a path (or, via `matched_path_or_any_parents`, one of its ancestors)
@@ -292,6 +352,29 @@ impl Storage {
         set.into_iter()
             .map(|s| VirtualPath::new(&s))
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    /// Build a [`LinkIndex`] of the caller's visible notes across `regions`, for
+    /// wikilink resolution. Reuses the same own-scope filtering and visibility
+    /// rules as listing, so an excluded (hidden/ignored) or other-scope note is
+    /// never a resolution candidate.
+    pub fn build_link_index(
+        &self,
+        rendered_scope: &str,
+        regions: &[Region],
+    ) -> Result<LinkIndex, AgentmemError> {
+        let mut index = LinkIndex::default();
+        for region in regions {
+            let paths = match region {
+                Region::InsideAgentsFolder => self.list_inside_agents_folder(rendered_scope)?,
+                Region::OutsideAgentsFolder => self.list_outside_agents_folder()?,
+            };
+            for p in paths {
+                index.insert(p.as_str(), *region);
+            }
+        }
+        index.sort();
+        Ok(index)
     }
 
     // --- internals ---
@@ -804,6 +887,61 @@ mod tests {
         let note = s.resolver.resolve("", &vp(".agents/notes.md")).unwrap();
         s.write_atomic(&note, "x").unwrap();
         assert!(s.is_visible(&note));
+    }
+
+    /// The link index contains own-scope and shared notes (keyed by clean
+    /// basename) but excludes other scopes' files.
+    #[test]
+    fn link_index_spans_own_scope_and_shared_excludes_others() {
+        let tmp = TempDir::new().unwrap();
+        let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
+        // Own scope, another scope, and a shared note.
+        for (scope, name) in [
+            ("coder.alice", "Agents/topics/rust.md"),
+            ("coder.bob", "Agents/topics/rust.md"),
+        ] {
+            let p = s.resolver.resolve(scope, &vp(name)).unwrap();
+            s.write_atomic(&p, "x").unwrap();
+        }
+        let shared = s.resolver.resolve("", &vp("Actions/release.md")).unwrap();
+        s.write_atomic(&shared, "x").unwrap();
+
+        let index = s
+            .build_link_index(
+                "coder.alice",
+                &[Region::InsideAgentsFolder, Region::OutsideAgentsFolder],
+            )
+            .unwrap();
+
+        // Own-scope `rust` is present and tagged inside; bob's is not a candidate.
+        let rust = index.entries_for_basename("rust");
+        assert_eq!(rust.len(), 1, "only the caller's own rust.md is indexed");
+        assert_eq!(rust[0].clean_path, "Agents/topics/rust");
+        assert_eq!(rust[0].region, Region::InsideAgentsFolder);
+
+        // Shared note is present and tagged outside.
+        let release = index.entries_for_basename("release");
+        assert_eq!(release.len(), 1);
+        assert_eq!(release[0].clean_path, "Actions/release");
+        assert_eq!(release[0].region, Region::OutsideAgentsFolder);
+    }
+
+    /// An ignored note is not a resolution candidate in the link index.
+    #[test]
+    fn link_index_excludes_ignored_notes() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child(".gitignore").write_str("*.wip.md\n").unwrap();
+        let s = storage(&tmp, "Agents", "", true, false);
+        let kept = s.resolver.resolve("", &vp("Agents/keep.md")).unwrap();
+        let ignored = s.resolver.resolve("", &vp("Agents/draft.wip.md")).unwrap();
+        s.write_atomic(&kept, "x").unwrap();
+        s.write_atomic(&ignored, "x").unwrap();
+
+        let index = s
+            .build_link_index("", &[Region::InsideAgentsFolder])
+            .unwrap();
+        assert_eq!(index.entries_for_basename("keep").len(), 1);
+        assert!(index.entries_for_basename("draft.wip").is_empty());
     }
 
     /// Concurrent writes to the same diary file are serialised by the per-target

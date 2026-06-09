@@ -351,6 +351,33 @@ fn apply_suffix_to_filename(filename: &str, suffix: &str) -> String {
     }
 }
 
+/// Append the scope suffix to a link target, leaving any leading directory
+/// segments untouched. A wikilink target (`rust`, `topics/rust`) has no extension
+/// so the suffix is appended verbatim; a markdown target carrying a `.md`
+/// extension (`topics/rust.md`) gets the suffix inserted before the extension.
+///
+/// Link targets only ever carry a `.md` extension or none, so — unlike
+/// [`apply_suffix_to_filename`] — this does not consult `Utf8Path::extension`,
+/// which would mistake the dotted suffix itself (`.coder.alice`) for an extension.
+pub fn apply_suffix_to_link_target(target: &str, suffix: &str) -> String {
+    match target.strip_suffix(".md") {
+        Some(stem) => format!("{stem}.{suffix}.md"),
+        None => format!("{target}.{suffix}"),
+    }
+}
+
+/// Inverse of [`apply_suffix_to_link_target`]: recover the clean link target if
+/// it carries `suffix`, else `None`.
+pub fn strip_suffix_from_link_target(target: &str, suffix: &str) -> Option<String> {
+    let needle = format!(".{suffix}");
+    match target.strip_suffix(".md") {
+        Some(stem) => stem
+            .strip_suffix(&needle)
+            .map(|clean| format!("{clean}.md")),
+        None => target.strip_suffix(&needle).map(|s| s.to_string()),
+    }
+}
+
 /// Inverse of [`apply_suffix_to_filename`]: recover the original filename if it
 /// carries `suffix`, else `None`.
 fn strip_scope_from_filename(filename: &str, suffix: &str) -> Option<String> {
@@ -586,5 +613,65 @@ mod tests {
             .unwrap()
             .join("Agents/coder.bob/tasks/plan.coder.bob.md");
         assert_eq!(r.strip_suffix(&physical, "coder.alice"), None);
+    }
+
+    #[test]
+    fn link_target_suffix_round_trips_for_wikilinks() {
+        // Bare basename (no extension): suffix appended verbatim.
+        assert_eq!(
+            apply_suffix_to_link_target("rust", "coder.alice"),
+            "rust.coder.alice"
+        );
+        assert_eq!(
+            strip_suffix_from_link_target("rust.coder.alice", "coder.alice").as_deref(),
+            Some("rust")
+        );
+        // Path-qualified target: only the final segment is suffixed.
+        assert_eq!(
+            apply_suffix_to_link_target("topics/rust", "coder.alice"),
+            "topics/rust.coder.alice"
+        );
+        assert_eq!(
+            strip_suffix_from_link_target("topics/rust.coder.alice", "coder.alice").as_deref(),
+            Some("topics/rust")
+        );
+    }
+
+    #[test]
+    fn link_target_suffix_round_trips_for_markdown() {
+        // A `.md` extension: suffix is inserted before the extension.
+        assert_eq!(
+            apply_suffix_to_link_target("topics/rust.md", "coder.alice"),
+            "topics/rust.coder.alice.md"
+        );
+        assert_eq!(
+            strip_suffix_from_link_target("topics/rust.coder.alice.md", "coder.alice").as_deref(),
+            Some("topics/rust.md")
+        );
+    }
+
+    #[test]
+    fn link_target_strip_requires_exact_suffix() {
+        // A target not carrying the suffix is left unrecovered (None).
+        assert_eq!(strip_suffix_from_link_target("rust", "coder.alice"), None);
+        assert_eq!(
+            strip_suffix_from_link_target("rust.coder.bob", "coder.alice"),
+            None
+        );
+    }
+
+    #[test]
+    fn link_target_collision_case_is_exact_match() {
+        // A note literally named `x.coder.alice` collides with the suffix shape:
+        // the exact-match strip recovers `x`, mirroring the filename transform.
+        // Applying then stripping round-trips through the doubled suffix.
+        assert_eq!(
+            apply_suffix_to_link_target("x.coder.alice", "coder.alice"),
+            "x.coder.alice.coder.alice"
+        );
+        assert_eq!(
+            strip_suffix_from_link_target("x.coder.alice.coder.alice", "coder.alice").as_deref(),
+            Some("x.coder.alice")
+        );
     }
 }

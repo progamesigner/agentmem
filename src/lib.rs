@@ -15,6 +15,7 @@ pub mod telemetry;
 pub mod template;
 pub mod tools;
 pub mod transport;
+pub mod wikilink;
 
 pub use error::{AgentmemError, ErrorCode};
 pub use mcp::AgentmemServer;

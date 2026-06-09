@@ -192,6 +192,25 @@ are changed only through `evolve_core_persona` / `update_task_heartbeat`.
 paths under a subfolder; a root-level target is rejected with `path_not_permitted`.
 Reads of root files remain allowed.
 
+### Cross-note links
+
+Notes may reference each other with Obsidian `[[wikilink]]` syntax and relative
+markdown links `[text](path.md)`. Write the **shortest unambiguous note name**
+(`[[rust]]`, or `[[topics/rust]]` when a bare basename is shared by two visible
+notes) — the server resolves it against your visible set (your own scope plus the
+shared region) exactly as Obsidian resolves by basename.
+
+Links round-trip transparently. On read you only ever see clean shortest names; on
+write a link to your own scoped note is rewritten to its on-disk suffixed form so a
+human browsing the vault in Obsidian can follow it, and a link to a shared note is
+left clean. Aliases (`[[t|alias]]`), headings (`[[t#h]]`), and embeds (`![[t]]`)
+are preserved. A link that does not resolve is left verbatim as a dangling link.
+
+Because a suffixed link would expose your scope's existence, a note in the **shared
+region** that links to one of **your own scoped** notes is rejected with
+`write_denied`; link shared notes from shared notes, or scoped notes from scoped
+notes.
+
 ## Session context
 
 A **session-context template** weaves the five foundational files

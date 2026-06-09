@@ -341,6 +341,35 @@ impl Toolbox {
         })
     }
 
+    /// Apply the write-side link transform to `content` for a note at `vpath`.
+    /// A no-op when the scheme is empty (no scopes, hence no suffix and no
+    /// cross-scope leak). May return a leak-guard `WriteDenied` when a shared
+    /// note links into the caller's own scope.
+    fn expand_links_for(
+        &self,
+        scope: &str,
+        vpath: &VirtualPath,
+        content: &str,
+    ) -> Result<String, AgentmemError> {
+        if self.scheme().is_empty() {
+            return Ok(content.to_string());
+        }
+        let resolver = self.storage.resolver();
+        let region = resolver.detect_region(vpath);
+        let regions = self.policy.list_visible_regions(false);
+        let index = self.storage.build_link_index(scope, &regions)?;
+        crate::wikilink::expand_links(content, scope, region, resolver, &index)
+    }
+
+    /// Strip the caller's own scope suffix from link targets in `content`. A
+    /// no-op when the scheme is empty.
+    fn strip_links_for(&self, scope: &str, content: &str) -> String {
+        if self.scheme().is_empty() {
+            return content.to_string();
+        }
+        crate::wikilink::strip_links(content, scope, self.storage.resolver())
+    }
+
     /// Map a [`PolicyError`] to the appropriate boundary error for `vpath`.
     fn policy_err(err: PolicyError, vpath: &VirtualPath) -> AgentmemError {
         match err {
@@ -422,7 +451,7 @@ impl Toolbox {
                 virtual_path: vpath.as_str().to_string(),
             });
         }
-        let content = self.storage.read(&physical)?;
+        let content = self.strip_links_for(&scope, &self.storage.read(&physical)?);
         let mut result = CallToolResult::success(vec![Content::text(content.clone())]);
         result.structured_content = Some(json!({ "content": content }));
         Ok(result)
@@ -433,6 +462,13 @@ impl Toolbox {
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
         let content = require_str(args, "content")?;
         self.reject_if_root_reserved(&vpath)?;
+        // Gate by policy before the link transform so a read-only/denied region
+        // reports its policy error rather than a leak-guard `write_denied`.
+        let region = self.storage.resolver().detect_region(&vpath);
+        self.policy
+            .gate_write(region)
+            .map_err(|e| Self::policy_err(e, &vpath))?;
+        let content = self.expand_links_for(&scope, &vpath, &content)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             storage.write_atomic(physical, &content)
         })
@@ -444,11 +480,15 @@ impl Toolbox {
         let search = require_str(args, "search_string")?;
         let replace = require_str(args, "replace_string")?;
         self.reject_if_root_reserved(&vpath)?;
-        let resolver = self.storage.resolver();
-        let region = resolver.detect_region(&vpath);
+        let region = self.storage.resolver().detect_region(&vpath);
         self.policy
             .gate_write(region)
             .map_err(|e| Self::policy_err(e, &vpath))?;
+        // Match the on-disk (suffixed) link form: transform the search/replace
+        // snippets the same way stored content was transformed on write.
+        let search = self.expand_links_for(&scope, &vpath, &search)?;
+        let replace = self.expand_links_for(&scope, &vpath, &replace)?;
+        let resolver = self.storage.resolver();
         let physical = resolver.resolve(&scope, &vpath)?;
         if !self.storage.is_visible(&physical) {
             return Err(AgentmemError::PathNotPermitted {
@@ -524,6 +564,10 @@ impl Toolbox {
             }
         }
         let vpath = self.agents_vpath(filename)?;
+        // Expand link targets so core files (e.g. a MEMORY.md index of `[[notes]]`)
+        // resolve in Obsidian; the line caps above count the agent-facing content,
+        // and expansion never changes the line count.
+        let content = self.expand_links_for(&scope, &vpath, &content)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             storage.write_atomic(physical, &content)
         })
@@ -533,6 +577,7 @@ impl Toolbox {
         let scope = self.resolve_scope(args, &["content"])?;
         let content = require_str(args, "content")?;
         let vpath = self.agents_vpath("HEARTBEAT.md")?;
+        let content = self.expand_links_for(&scope, &vpath, &content)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             storage.write_atomic(physical, &content)
         })
@@ -556,11 +601,12 @@ impl Toolbox {
         };
         let vpath = self.agents_vpath(&format!("diary/{date}.md"))?;
 
-        let resolver = self.storage.resolver();
-        let region = resolver.detect_region(&vpath);
+        let region = self.storage.resolver().detect_region(&vpath);
         self.policy
             .gate_write(region)
             .map_err(|e| Self::policy_err(e, &vpath))?;
+        let content = self.expand_links_for(&scope, &vpath, &content)?;
+        let resolver = self.storage.resolver();
         let physical = resolver.resolve(&scope, &vpath)?;
         if !self.storage.is_visible(&physical) {
             return Err(AgentmemError::PathNotPermitted {

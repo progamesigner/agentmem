@@ -10,6 +10,7 @@ guarantee in v1, and how to widen or narrow its visibility.
 | Claimed scope keys (`agent`, `user`, …) | **Trusted.** Any client reachable through the configured transport may address any scope. Per-tenant authentication is deferred. |
 | Path traversal (`..`, absolute paths, symlink escape) | **Prevented.** Structurally impossible to escape the vault root. |
 | Cross-scope access inside the agents folder | **Structurally impossible.** The resolver always appends the caller's own scope. |
+| Cross-scope leakage via `[[wikilinks]]` in shared notes | **Prevented.** A shared note linking to the caller's own scoped note is refused with `write_denied`; only the owning scope's suffix is ever persisted, and only in files that scope alone can read. |
 | Writes into human-owned regions | **Governed by policy.** Denied unless the active policy permits it. |
 | HTTP endpoint exposure | **Optional static bearer token.** Loopback-only by default. |
 
@@ -67,6 +68,21 @@ likewise filter by the caller's own suffix, so other scopes' files are invisible
 An empty scheme (`AGENTMEM_VFS_SCHEME=`) disables suffixing: the agents folder
 degenerates into a plain shared directory governed by the policy's outside-folder
 rules, with no own-scope isolation.
+
+## Cross-note links never leak a scope
+
+`[[wikilink]]` and relative markdown link targets in note content are rewritten on
+the same own-scope boundary as filenames. On read, the caller's own suffix is
+stripped from every target, so an agent only ever sees clean shortest names and
+never another scope's suffix. On write, a link to the caller's own scoped note is
+rewritten to its suffixed physical form — but that form is only ever stored inside
+the caller's own scope, which no other scope can read.
+
+The one direction that could leak is a **shared** note (readable by every scope)
+linking to the caller's **own scoped** note: persisting the suffixed target would
+expose the scope's existence to every reader. This is refused before any bytes are
+written, with code `write_denied` and a message naming the offending target. With
+an empty scheme there are no scopes and the transform is a no-op.
 
 ## The four policies and their guarantees outside the agents folder
 

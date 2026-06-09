@@ -153,6 +153,13 @@ pub fn render_session_context(
         let key = format!("files.{leaf}");
         match storage.read(&physical) {
             Ok(content) => {
+                // Strip the caller's own suffix from any `[[wikilinks]]` so the
+                // rendered core files (e.g. a MEMORY.md index) show clean names.
+                let content = if resolver.scheme().is_empty() {
+                    content
+                } else {
+                    crate::wikilink::strip_links(&content, &rendered_scope, resolver)
+                };
                 context.insert(key, content);
             }
             Err(AgentmemError::NotFound { .. }) => {

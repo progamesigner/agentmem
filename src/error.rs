@@ -72,6 +72,15 @@ pub enum AgentmemError {
     #[error("write denied: path '{virtual_path}' is in a read-only region under the active policy")]
     WriteDenied { virtual_path: String },
 
+    /// A shared note linked to a target in the caller's own scope; persisting its
+    /// suffixed form would leak the scope's existence. Reported with the
+    /// `write_denied` code; the message names the offending link target.
+    #[error(
+        "write denied: link target '{target}' resolves into your own scope and cannot be \
+         referenced from a shared note (it would leak your scope's existence)"
+    )]
+    CrossScopeLink { target: String },
+
     #[error("missing required scope key '{key}'")]
     MissingScope { key: String },
 
@@ -112,6 +121,7 @@ impl AgentmemError {
             AgentmemError::PathNotPermitted { .. } => ErrorCode::PathNotPermitted,
             AgentmemError::RootPathReserved { .. } => ErrorCode::PathNotPermitted,
             AgentmemError::WriteDenied { .. } => ErrorCode::WriteDenied,
+            AgentmemError::CrossScopeLink { .. } => ErrorCode::WriteDenied,
             AgentmemError::MissingScope { .. } => ErrorCode::MissingScope,
             AgentmemError::NotFound { .. } => ErrorCode::NotFound,
             AgentmemError::EditSearchNotFound => ErrorCode::EditSearchNotFound,
