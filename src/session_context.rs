@@ -158,8 +158,8 @@ pub fn render_session_context(
         context.insert(format!("scope.{k}"), v.clone());
     }
 
-    // Server-generated tools guide.
-    context.insert("tools_guide".to_string(), tools_guide(tools));
+    // Server-generated tools guide, carrying the concrete active scope.
+    context.insert("tools_guide".to_string(), tools_guide(tools, scope));
 
     // --- resolve the template source (layered) and render ---
     let source = resolve_template_source(storage, &rendered_scope, global_template_file)?;
@@ -217,12 +217,25 @@ fn agents_vpath(storage: &Storage, relative: &str) -> Result<VirtualPath, Agentm
     VirtualPath::new(&full)
 }
 
-/// Build the memory-tools guide from the live tool catalogue.
-fn tools_guide(tools: &[Tool]) -> String {
-    let mut out = String::from(
-        "These memory tools are available. Every call must carry the scope keys \
-         defined by the server's VFS scheme.\n\n",
-    );
+/// Build the memory-tools guide from the live tool catalogue, naming the
+/// concrete active scope so the agent knows exactly which keys/values to carry
+/// on every call (e.g. `agent=coder, user=alice`).
+fn tools_guide(tools: &[Tool], scope: &BTreeMap<String, String>) -> String {
+    let mut out = if scope.is_empty() {
+        String::from(
+            "These memory tools are available. Every call must carry the scope keys \
+             defined by the server's VFS scheme.\n\n",
+        )
+    } else {
+        let keys = scope
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "These memory tools are available. Every call must carry these scope keys: {keys}.\n\n"
+        )
+    };
     for tool in tools {
         let desc = tool.description.as_deref().unwrap_or("");
         out.push_str(&format!("- `{}`: {}\n", tool.name, desc));
@@ -341,6 +354,48 @@ mod tests {
         // the layout instead frames core files vs. an ordinary filesystem.
         assert!(!sc.rendered.contains("suffix"));
         assert!(sc.rendered.contains("ordinary filesystem"));
+    }
+
+    /// The tools guide names the concrete active scope keys/values so the agent
+    /// knows what to carry on every call.
+    #[test]
+    fn tools_guide_carries_concrete_scope_keys() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        let global = tmp.path().join("missing.md");
+        let tool = Tool::new(
+            "list_memory_notes",
+            "List the virtual paths.",
+            std::sync::Arc::new(serde_json::Map::new()),
+        );
+        let sc = render_session_context(
+            &storage,
+            &global,
+            std::slice::from_ref(&tool),
+            &scope(&[("agent", "coder"), ("user", "alice")]),
+        )
+        .unwrap();
+        assert!(
+            sc.rendered
+                .contains("Every call must carry these scope keys: agent=coder, user=alice.")
+        );
+        assert!(
+            sc.rendered
+                .contains("- `list_memory_notes`: List the virtual paths.")
+        );
+    }
+
+    /// With no scope keys, the tools guide keeps the generic phrasing rather than
+    /// naming any specific key.
+    #[test]
+    fn tools_guide_falls_back_to_generic_phrasing_for_empty_scope() {
+        let guide = tools_guide(&[], &BTreeMap::new());
+        assert!(
+            guide.contains(
+                "Every call must carry the scope keys defined by the server's VFS scheme."
+            )
+        );
+        assert!(!guide.contains("these scope keys:"));
     }
 
     /// `{{files.user}}` (file contents) and `{{scope.user}}` (scope value) are
