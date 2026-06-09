@@ -122,8 +122,10 @@ mod tests {
 
     fn compiled(text: Option<&str>, regex: Option<&str>) -> CompiledQuery {
         CompiledQuery {
+            raw_text: text.map(|s| s.to_string()),
             substring: text.map(|s| s.to_lowercase()),
             regex: regex.map(|r| regex::Regex::new(r).unwrap()),
+            filters: Vec::new(),
         }
     }
 

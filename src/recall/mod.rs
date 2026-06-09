@@ -15,6 +15,8 @@
 //! merging, so the agent-facing score is comparable across the two corpora.
 
 mod simple;
+#[cfg(feature = "recall-tantivy")]
+mod tantivy;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -104,12 +106,18 @@ pub(crate) struct ScanResult {
     pub truncated: bool,
 }
 
-/// A compiled query handed to a backend index.
+/// A compiled query handed to a backend index. Some fields are read only by the
+/// feature-gated tantivy backend.
+#[cfg_attr(not(feature = "recall-tantivy"), allow(dead_code))]
 pub(crate) struct CompiledQuery {
-    /// Lower-cased substring needle, if a `text` query was supplied.
+    /// The raw full-text query (used for BM25 on the tantivy backend).
+    pub raw_text: Option<String>,
+    /// Lower-cased substring needle (used for matching on the simple backend).
     pub substring: Option<String>,
     /// Compiled regex, if a `regex` query was supplied.
     pub regex: Option<regex::Regex>,
+    /// Frontmatter property predicates (applied by the tantivy backend only).
+    pub filters: Vec<PropertyFilter>,
 }
 
 /// One in-memory backend index over a single region's notes.
@@ -117,6 +125,9 @@ pub(crate) trait BackendIndex: Send {
     fn upsert(&mut self, clean_path: &str, body: &str);
     fn remove(&mut self, clean_path: &str);
     fn query(&self, query: &CompiledQuery, byte_cap: usize) -> ScanResult;
+    /// Persist a batch of upserts/removals. A no-op for backends that mutate in
+    /// place; the tantivy backend commits and reloads its reader here.
+    fn flush(&mut self) {}
 }
 
 // --- per-region index state ---
@@ -176,15 +187,19 @@ impl RecallEngine {
         let effective = match config.backend {
             RecallBackendKind::Off => return None,
             RecallBackendKind::Simple => RecallBackendKind::Simple,
-            // The tantivy backend is wired in by the `recall-tantivy` feature
-            // (added in a later change); until then a tantivy request falls back
-            // to the simple backend.
             RecallBackendKind::Tantivy => {
-                tracing::warn!(
-                    "AGENTMEM_RECALL_BACKEND=tantivy but the tantivy backend is not built in; \
-                     falling back to the simple backend"
-                );
-                RecallBackendKind::Simple
+                #[cfg(feature = "recall-tantivy")]
+                {
+                    RecallBackendKind::Tantivy
+                }
+                #[cfg(not(feature = "recall-tantivy"))]
+                {
+                    tracing::warn!(
+                        "AGENTMEM_RECALL_BACKEND=tantivy but the binary was built without the \
+                         'recall-tantivy' feature; falling back to the simple backend"
+                    );
+                    RecallBackendKind::Simple
+                }
             }
         };
         Some(RecallEngine {
@@ -209,7 +224,7 @@ impl RecallEngine {
 
     /// Whether the effective backend can apply frontmatter property filters.
     pub fn supports_property_filters(&self) -> bool {
-        matches!(self.effective, RecallBackendKind::Tantivy)
+        cfg!(feature = "recall-tantivy") && matches!(self.effective, RecallBackendKind::Tantivy)
     }
 
     /// `true` once the eager startup build has completed. Backs `GET /readyz`.
@@ -411,10 +426,13 @@ impl RecallEngine {
     fn new_region_index(&self, region: IndexRegion) -> RegionIndex {
         let backend: Box<dyn BackendIndex> = match self.effective {
             RecallBackendKind::Simple => Box::new(simple::SimpleIndex::default()),
-            // `new` resolves Tantivy → Simple until the backend is built in.
-            RecallBackendKind::Tantivy | RecallBackendKind::Off => {
-                Box::new(simple::SimpleIndex::default())
-            }
+            #[cfg(feature = "recall-tantivy")]
+            RecallBackendKind::Tantivy => Box::new(tantivy::TantivyIndex::new()),
+            // Without the feature, `new` never resolves the effective backend to
+            // Tantivy, so this arm is unreachable.
+            #[cfg(not(feature = "recall-tantivy"))]
+            RecallBackendKind::Tantivy => Box::new(simple::SimpleIndex::default()),
+            RecallBackendKind::Off => unreachable!("engine is None when recall is off"),
         };
         RegionIndex {
             region,
@@ -546,6 +564,7 @@ fn reconcile_with(idx: &mut RegionIndex, storage: &Storage) {
         }
     }
 
+    idx.backend.flush();
     idx.last_reconcile = Some(Instant::now());
 }
 
@@ -580,6 +599,7 @@ fn apply_path_with(idx: &mut RegionIndex, physical: &PhysicalPath, storage: &Sto
             }
         }
     }
+    idx.backend.flush();
 }
 
 /// Derive the clean virtual path of a physical file for the given index region.
@@ -601,11 +621,8 @@ fn clean_path_for(idx: &RegionIndex, physical: &PhysicalPath, storage: &Storage)
 
 /// Compile a query for the backends, validating the regex.
 fn compile_query(query: &RecallQuery) -> Result<CompiledQuery, AgentmemError> {
-    let substring = query
-        .text
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_lowercase());
+    let raw_text = query.text.as_ref().filter(|s| !s.is_empty()).cloned();
+    let substring = raw_text.as_ref().map(|s| s.to_lowercase());
     let regex = match query.regex.as_ref().filter(|s| !s.is_empty()) {
         Some(pattern) => {
             Some(
@@ -616,7 +633,12 @@ fn compile_query(query: &RecallQuery) -> Result<CompiledQuery, AgentmemError> {
         }
         None => None,
     };
-    Ok(CompiledQuery { substring, regex })
+    Ok(CompiledQuery {
+        raw_text,
+        substring,
+        regex,
+        filters: query.filters.clone(),
+    })
 }
 
 /// Normalize one index's raw scores to 0–1 (by its own max) and append to `merged`.
@@ -749,6 +771,54 @@ mod tests {
         });
         let err = engine.recall("coder.alice", BOTH, &q).unwrap_err();
         assert_eq!(err.code(), crate::error::ErrorCode::Unsupported);
+    }
+
+    #[cfg(feature = "recall-tantivy")]
+    #[test]
+    fn tantivy_backend_applies_property_filters_end_to_end() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("Agents/coder.alice/topics/rust.coder.alice.md")
+            .write_str("---\nstatus: published\n---\nThe borrow checker enforces ownership.")
+            .unwrap();
+        let resolver = PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            camino::Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        );
+        let storage = Arc::new(Storage::new(resolver, true, false, &[]));
+        let config = RecallConfig {
+            backend: RecallBackendKind::Tantivy,
+            watch_debounce: std::time::Duration::from_millis(0),
+            regex_scan_byte_cap: usize::MAX,
+            max_resident_scopes: 256,
+            freshness: std::time::Duration::from_millis(0),
+        };
+        let engine = RecallEngine::new(storage, config).unwrap();
+        assert!(engine.supports_property_filters());
+
+        let mut q = query("borrow");
+        q.filters.push(PropertyFilter {
+            key: "status".into(),
+            op: FilterOp::Eq,
+            value: Some("published".into()),
+        });
+        let hits = engine.recall("coder.alice", BOTH, &q).unwrap().hits;
+        assert!(hits.iter().any(|h| h.path == "Agents/topics/rust.md"));
+
+        // A non-matching property filter excludes the note.
+        let mut q2 = query("borrow");
+        q2.filters.push(PropertyFilter {
+            key: "status".into(),
+            op: FilterOp::Eq,
+            value: Some("draft".into()),
+        });
+        assert!(
+            engine
+                .recall("coder.alice", BOTH, &q2)
+                .unwrap()
+                .hits
+                .is_empty()
+        );
     }
 
     #[test]
