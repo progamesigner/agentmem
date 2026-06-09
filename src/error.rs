@@ -24,6 +24,7 @@ pub enum ErrorCode {
     EditSearchNotFound,
     EditSearchAmbiguous,
     InvalidArgument,
+    Unsupported,
     Io,
     Config,
     Transport,
@@ -40,6 +41,7 @@ impl ErrorCode {
             ErrorCode::EditSearchNotFound => "edit_search_not_found",
             ErrorCode::EditSearchAmbiguous => "edit_search_ambiguous",
             ErrorCode::InvalidArgument => "invalid_argument",
+            ErrorCode::Unsupported => "unsupported",
             ErrorCode::Io => "io",
             ErrorCode::Config => "config",
             ErrorCode::Transport => "transport",
@@ -98,6 +100,11 @@ pub enum AgentmemError {
     #[error("invalid argument: {message}")]
     InvalidArgument { message: String },
 
+    /// A request asked for a capability the active backend does not provide
+    /// (e.g. frontmatter property filters against the `simple` recall backend).
+    #[error("unsupported: {message}")]
+    Unsupported { message: String },
+
     /// An IO failure. Only the kind and a static context label are retained so no
     /// raw OS error string ever reaches the client.
     #[error("io error while {context}")]
@@ -127,6 +134,7 @@ impl AgentmemError {
             AgentmemError::EditSearchNotFound => ErrorCode::EditSearchNotFound,
             AgentmemError::EditSearchAmbiguous { .. } => ErrorCode::EditSearchAmbiguous,
             AgentmemError::InvalidArgument { .. } => ErrorCode::InvalidArgument,
+            AgentmemError::Unsupported { .. } => ErrorCode::Unsupported,
             AgentmemError::Io { .. } => ErrorCode::Io,
             AgentmemError::Config { .. } => ErrorCode::Config,
             AgentmemError::Transport { .. } => ErrorCode::Transport,
@@ -168,6 +176,7 @@ impl From<AgentmemError> for McpError {
         match code {
             ErrorCode::MissingScope
             | ErrorCode::InvalidArgument
+            | ErrorCode::Unsupported
             | ErrorCode::EditSearchNotFound
             | ErrorCode::EditSearchAmbiguous => McpError::invalid_params(err.to_string(), data),
             ErrorCode::NotFound => McpError::resource_not_found(err.to_string(), data),
@@ -200,6 +209,7 @@ mod tests {
             "edit_search_ambiguous"
         );
         assert_eq!(ErrorCode::InvalidArgument.as_str(), "invalid_argument");
+        assert_eq!(ErrorCode::Unsupported.as_str(), "unsupported");
         assert_eq!(ErrorCode::Io.as_str(), "io");
         assert_eq!(ErrorCode::Config.as_str(), "config");
         assert_eq!(ErrorCode::Transport.as_str(), "transport");

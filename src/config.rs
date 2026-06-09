@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use chrono_tz::Tz;
@@ -27,6 +28,18 @@ pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8000";
 /// The default tracing filter directive.
 pub const DEFAULT_LOG_FILTER: &str = "warn,agentmem=info";
 
+/// Default filesystem-watcher debounce window, in milliseconds.
+pub const DEFAULT_RECALL_WATCH_DEBOUNCE_MS: u64 = 500;
+/// Default upper bound on bytes scanned by a regex-only recall query before the
+/// scan is truncated and the result flagged.
+pub const DEFAULT_RECALL_REGEX_SCAN_BYTES: usize = 64 * 1024 * 1024;
+/// Default cap on the number of resident per-scope indexes before idle ones are
+/// evicted (they rebuild on next access).
+pub const DEFAULT_RECALL_MAX_RESIDENT_SCOPES: usize = 256;
+/// Default freshness window: a recall reuses its index without a stat-diff
+/// reconcile for this long after the last one (unless the watcher marks it dirty).
+pub const DEFAULT_RECALL_FRESHNESS_MS: u64 = 2000;
+
 const VAR_ROOT_DIR: &str = "AGENTMEM_ROOT_DIR";
 const VAR_AGENTS_DIR: &str = "AGENTMEM_AGENTS_DIR";
 const VAR_SCHEME: &str = "AGENTMEM_VFS_SCHEME";
@@ -41,6 +54,11 @@ const VAR_HONOR_IGNORE: &str = "AGENTMEM_HONOR_IGNORE_FILES";
 const VAR_INCLUDE_HIDDEN: &str = "AGENTMEM_INCLUDE_HIDDEN";
 const VAR_INCLUDE_HIDDEN_GLOBS: &str = "AGENTMEM_INCLUDE_HIDDEN_GLOBS";
 const VAR_LOG: &str = "AGENTMEM_LOG";
+const VAR_RECALL_BACKEND: &str = "AGENTMEM_RECALL_BACKEND";
+const VAR_RECALL_WATCH_DEBOUNCE_MS: &str = "AGENTMEM_RECALL_WATCH_DEBOUNCE_MS";
+const VAR_RECALL_REGEX_SCAN_BYTES: &str = "AGENTMEM_RECALL_REGEX_SCAN_BYTES";
+const VAR_RECALL_MAX_RESIDENT_SCOPES: &str = "AGENTMEM_RECALL_MAX_RESIDENT_SCOPES";
+const VAR_RECALL_FRESHNESS_MS: &str = "AGENTMEM_RECALL_FRESHNESS_MS";
 
 /// The selected transport and its parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +85,59 @@ impl Transport {
     }
 }
 
+/// The requested recall search backend.
+///
+/// `Tantivy` is honoured only when the binary is built with the `recall-tantivy`
+/// cargo feature; otherwise the engine falls back to `Simple` (see
+/// `crate::recall`). `Off` suppresses the `recall_memory_notes` tool entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecallBackendKind {
+    Simple,
+    Tantivy,
+    Off,
+}
+
+impl RecallBackendKind {
+    /// The accepted variable values, for error messages.
+    pub const ACCEPTED: &'static [&'static str] = &["simple", "tantivy", "off"];
+
+    /// Parse the `AGENTMEM_RECALL_BACKEND` value.
+    pub fn parse(s: &str) -> Option<RecallBackendKind> {
+        match s {
+            "simple" => Some(RecallBackendKind::Simple),
+            "tantivy" => Some(RecallBackendKind::Tantivy),
+            "off" => Some(RecallBackendKind::Off),
+            _ => None,
+        }
+    }
+
+    /// The canonical string form (matches the accepted variable value).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecallBackendKind::Simple => "simple",
+            RecallBackendKind::Tantivy => "tantivy",
+            RecallBackendKind::Off => "off",
+        }
+    }
+}
+
+/// Recall search configuration: the requested backend plus its tuning knobs.
+#[derive(Debug, Clone)]
+pub struct RecallConfig {
+    /// The requested backend (the effective backend is resolved at engine build
+    /// time against the `recall-tantivy` feature).
+    pub backend: RecallBackendKind,
+    /// Filesystem-watcher debounce window.
+    pub watch_debounce: Duration,
+    /// Upper bound on bytes a regex-only query scans before truncating.
+    pub regex_scan_byte_cap: usize,
+    /// Cap on resident per-scope indexes before idle eviction.
+    pub max_resident_scopes: usize,
+    /// How long an index stays fresh before a query re-runs the stat-diff
+    /// reconcile (the watcher can mark it dirty sooner).
+    pub freshness: Duration,
+}
+
 /// The fully-resolved server configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -89,6 +160,8 @@ pub struct Config {
     pub include_hidden_globs: Vec<String>,
     /// The `tracing_subscriber::EnvFilter` directive string.
     pub log_filter: String,
+    /// Recall search configuration.
+    pub recall: RecallConfig,
 }
 
 /// CLI flags that mirror — and override — the environment variables.
@@ -143,6 +216,9 @@ pub struct Cli {
     /// Tracing filter directive (overrides AGENTMEM_LOG).
     #[arg(long)]
     pub log: Option<String>,
+    /// Recall backend: simple|tantivy|off (overrides AGENTMEM_RECALL_BACKEND).
+    #[arg(long)]
+    pub recall_backend: Option<String>,
     /// Print the effective configuration to stderr and exit.
     #[arg(long)]
     pub print_config: bool,
@@ -196,6 +272,9 @@ impl Cli {
         }
         if let Some(v) = &self.log {
             m.insert(VAR_LOG, v.clone());
+        }
+        if let Some(v) = &self.recall_backend {
+            m.insert(VAR_RECALL_BACKEND, v.clone());
         }
         m
     }
@@ -305,6 +384,9 @@ impl Config {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
 
+        // --- recall ---
+        let recall = parse_recall(get)?;
+
         Ok(Config {
             root_dir,
             agents_dir,
@@ -317,6 +399,7 @@ impl Config {
             include_hidden,
             include_hidden_globs,
             log_filter,
+            recall,
         })
     }
 
@@ -356,7 +439,8 @@ impl Config {
              honor_ignore_files = {ignore}\n\
              include_hidden = {hidden}\n\
              include_hidden_globs = {hidden_globs}\n\
-             log_filter = {log}",
+             log_filter = {log}\n\
+             recall_backend = {recall}",
             root = self.root_dir.display(),
             agents = if self.agents_dir.as_str().is_empty() {
                 "<vault root>"
@@ -376,6 +460,7 @@ impl Config {
                 self.include_hidden_globs.join(", ")
             },
             log = self.log_filter,
+            recall = self.recall.backend.as_str(),
         )
     }
 
@@ -447,6 +532,61 @@ fn parse_transport(get: &dyn Fn(&str) -> Option<String>) -> Result<Transport, Ag
         other => Err(config_err(format!(
             "{VAR_TRANSPORT} must be one of [\"stdio\", \"http\"], got {other:?}"
         ))),
+    }
+}
+
+/// Parse the recall configuration block. The backend value is validated here; the
+/// effective backend (honouring the `recall-tantivy` feature) is resolved later by
+/// the engine. Tuning knobs fall back to their documented defaults.
+fn parse_recall(get: &dyn Fn(&str) -> Option<String>) -> Result<RecallConfig, AgentmemError> {
+    let backend = match get(VAR_RECALL_BACKEND).filter(|s| !s.is_empty()) {
+        Some(raw) => RecallBackendKind::parse(&raw).ok_or_else(|| {
+            config_err(format!(
+                "{VAR_RECALL_BACKEND} must be one of {:?}, got {raw:?}",
+                RecallBackendKind::ACCEPTED
+            ))
+        })?,
+        None => RecallBackendKind::Simple,
+    };
+    let watch_debounce = Duration::from_millis(parse_u64(
+        get,
+        VAR_RECALL_WATCH_DEBOUNCE_MS,
+        DEFAULT_RECALL_WATCH_DEBOUNCE_MS,
+    )?);
+    let regex_scan_byte_cap = parse_u64(
+        get,
+        VAR_RECALL_REGEX_SCAN_BYTES,
+        DEFAULT_RECALL_REGEX_SCAN_BYTES as u64,
+    )? as usize;
+    let max_resident_scopes = parse_u64(
+        get,
+        VAR_RECALL_MAX_RESIDENT_SCOPES,
+        DEFAULT_RECALL_MAX_RESIDENT_SCOPES as u64,
+    )? as usize;
+    let freshness = Duration::from_millis(parse_u64(
+        get,
+        VAR_RECALL_FRESHNESS_MS,
+        DEFAULT_RECALL_FRESHNESS_MS,
+    )?);
+    Ok(RecallConfig {
+        backend,
+        watch_debounce,
+        regex_scan_byte_cap,
+        max_resident_scopes,
+        freshness,
+    })
+}
+
+fn parse_u64(
+    get: &dyn Fn(&str) -> Option<String>,
+    var: &str,
+    default: u64,
+) -> Result<u64, AgentmemError> {
+    match get(var).filter(|s| !s.is_empty()) {
+        None => Ok(default),
+        Some(v) => v
+            .parse::<u64>()
+            .map_err(|_| config_err(format!("{var} must be a non-negative integer, got {v:?}"))),
     }
 }
 
@@ -539,6 +679,58 @@ mod tests {
         assert!(cfg.honor_ignore_files);
         assert!(!cfg.include_hidden);
         assert_eq!(cfg.log_filter, DEFAULT_LOG_FILTER);
+        // Recall defaults: simple backend, documented tuning knobs.
+        assert_eq!(cfg.recall.backend, RecallBackendKind::Simple);
+        assert_eq!(
+            cfg.recall.watch_debounce,
+            Duration::from_millis(DEFAULT_RECALL_WATCH_DEBOUNCE_MS)
+        );
+        assert_eq!(
+            cfg.recall.regex_scan_byte_cap,
+            DEFAULT_RECALL_REGEX_SCAN_BYTES
+        );
+        assert_eq!(
+            cfg.recall.max_resident_scopes,
+            DEFAULT_RECALL_MAX_RESIDENT_SCOPES
+        );
+    }
+
+    #[test]
+    fn recall_backend_parsed_and_validated() {
+        let tmp = TempDir::new().unwrap();
+        for (raw, want) in [
+            ("simple", RecallBackendKind::Simple),
+            ("tantivy", RecallBackendKind::Tantivy),
+            ("off", RecallBackendKind::Off),
+        ] {
+            let cfg = build(with_root(&tmp, &[(VAR_RECALL_BACKEND, raw)])).unwrap();
+            assert_eq!(cfg.recall.backend, want);
+            assert_eq!(cfg.recall.backend.as_str(), raw);
+        }
+        let err = build(with_root(&tmp, &[(VAR_RECALL_BACKEND, "fuzzy")])).unwrap_err();
+        assert!(err.to_string().contains(VAR_RECALL_BACKEND));
+    }
+
+    #[test]
+    fn recall_tuning_knobs_override_and_reject_garbage() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_RECALL_WATCH_DEBOUNCE_MS, "250"),
+                (VAR_RECALL_REGEX_SCAN_BYTES, "1024"),
+                (VAR_RECALL_MAX_RESIDENT_SCOPES, "8"),
+                (VAR_RECALL_FRESHNESS_MS, "100"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(cfg.recall.watch_debounce, Duration::from_millis(250));
+        assert_eq!(cfg.recall.regex_scan_byte_cap, 1024);
+        assert_eq!(cfg.recall.max_resident_scopes, 8);
+        assert_eq!(cfg.recall.freshness, Duration::from_millis(100));
+
+        let err = build(with_root(&tmp, &[(VAR_RECALL_REGEX_SCAN_BYTES, "lots")])).unwrap_err();
+        assert!(err.to_string().contains(VAR_RECALL_REGEX_SCAN_BYTES));
     }
 
     #[test]
