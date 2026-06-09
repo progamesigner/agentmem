@@ -97,6 +97,10 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
+    # QEMU lets the amd64 runner boot the arm64 image for its smoke test.
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
 
@@ -129,28 +133,44 @@ jobs:
           org.opencontainers.image.documentation=${{ env.IMAGE_DOCUMENTATION }}
           org.opencontainers.image.vendor=progamesigner
 
-    # Build the amd64 image and smoke-test it before any push is trusted.
+    # Build every published arch and smoke-test each before any push is trusted.
+    # --load only accepts one platform per call, so build them separately.
     - name: Build amd64 image for smoke test
       uses: docker/build-push-action@v7
       with:
         context: .
         platforms: linux/amd64
         load: true
-        tags: agentmem:smoke
+        tags: agentmem:smoke-amd64
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: Smoke test the health endpoint
+    - name: Build arm64 image for smoke test
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        platforms: linux/arm64
+        load: true
+        tags: agentmem:smoke-arm64
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Smoke test the health endpoint on every arch
       run: |
-        docker run -d --name smoke -p 8000:8000 agentmem:smoke
-        ok=0
-        for _ in $(seq 1 30); do
-          if curl -fsS http://127.0.0.1:8000/healthz; then ok=1; break; fi
-          sleep 1
+        set -e
+        for arch in amd64 arm64; do
+          echo "::group::smoke linux/$arch"
+          docker run -d --name "smoke-$arch" -p 8000:8000 "agentmem:smoke-$arch"
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/healthz; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs "smoke-$arch"
+          docker rm -f "smoke-$arch"
+          echo "::endgroup::"
+          if [ "$ok" != "1" ]; then echo "smoke test failed on linux/$arch"; exit 1; fi
         done
-        docker logs smoke
-        docker rm -f smoke
-        test "$ok" = "1"
 
     - name: Build and push multi-arch image
       uses: docker/build-push-action@v7
