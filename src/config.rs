@@ -35,6 +35,7 @@ const VAR_POLICY: &str = "AGENTMEM_POLICY";
 const VAR_TRANSPORT: &str = "AGENTMEM_TRANSPORT";
 const VAR_HTTP_BIND: &str = "AGENTMEM_HTTP_BIND";
 const VAR_HTTP_BEARER: &str = "AGENTMEM_HTTP_BEARER";
+const VAR_HTTP_ALLOWED_HOSTS: &str = "AGENTMEM_HTTP_ALLOWED_HOSTS";
 const VAR_TIMEZONE: &str = "AGENTMEM_TIMEZONE";
 const VAR_HONOR_IGNORE: &str = "AGENTMEM_HONOR_IGNORE_FILES";
 const VAR_INCLUDE_HIDDEN: &str = "AGENTMEM_INCLUDE_HIDDEN";
@@ -48,6 +49,10 @@ pub enum Transport {
     Http {
         bind: SocketAddr,
         bearer: Option<String>,
+        /// `Host`-header allow-list for the Streamable HTTP transport. Empty
+        /// means "use rmcp's loopback-only default"; the sole entry `*` disables
+        /// `Host` validation entirely.
+        allowed_hosts: Vec<String>,
     },
 }
 
@@ -56,7 +61,7 @@ impl Transport {
     /// the condition that warrants a startup warning.
     pub fn is_unauthenticated_non_loopback(&self) -> bool {
         match self {
-            Transport::Http { bind, bearer } => bearer.is_none() && !bind.ip().is_loopback(),
+            Transport::Http { bind, bearer, .. } => bearer.is_none() && !bind.ip().is_loopback(),
             Transport::Stdio => false,
         }
     }
@@ -118,6 +123,10 @@ pub struct Cli {
     /// HTTP bearer token (overrides AGENTMEM_HTTP_BEARER).
     #[arg(long)]
     pub http_bearer: Option<String>,
+    /// Comma-separated `Host` allow-list for the HTTP transport; `*` disables
+    /// validation (overrides AGENTMEM_HTTP_ALLOWED_HOSTS).
+    #[arg(long)]
+    pub http_allowed_hosts: Option<String>,
     /// IANA timezone (overrides AGENTMEM_TIMEZONE).
     #[arg(long)]
     pub timezone: Option<String>,
@@ -169,6 +178,9 @@ impl Cli {
         }
         if let Some(v) = &self.http_bearer {
             m.insert(VAR_HTTP_BEARER, v.clone());
+        }
+        if let Some(v) = &self.http_allowed_hosts {
+            m.insert(VAR_HTTP_ALLOWED_HOSTS, v.clone());
         }
         if let Some(v) = &self.timezone {
             m.insert(VAR_TIMEZONE, v.clone());
@@ -321,9 +333,14 @@ impl Config {
     pub fn describe(&self) -> String {
         let transport = match &self.transport {
             Transport::Stdio => "stdio".to_string(),
-            Transport::Http { bind, bearer } => {
+            Transport::Http {
+                bind,
+                bearer,
+                allowed_hosts,
+            } => {
+                let hosts = describe_allowed_hosts(allowed_hosts);
                 format!(
-                    "http bind={bind} bearer={}",
+                    "http bind={bind} bearer={} allowed_hosts={hosts}",
                     if bearer.is_some() { "set" } else { "unset" }
                 )
             }
@@ -412,7 +429,20 @@ fn parse_transport(get: &dyn Fn(&str) -> Option<String>) -> Result<Transport, Ag
                 ))
             })?;
             let bearer = get(VAR_HTTP_BEARER).filter(|s| !s.is_empty());
-            Ok(Transport::Http { bind, bearer })
+            // Comma-separated `Host` allow-list; trim and drop empties. An empty
+            // result leaves rmcp's loopback-only default in place; a sole `*`
+            // disables `Host` validation.
+            let allowed_hosts: Vec<String> = get(VAR_HTTP_ALLOWED_HOSTS)
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            Ok(Transport::Http {
+                bind,
+                bearer,
+                allowed_hosts,
+            })
         }
         other => Err(config_err(format!(
             "{VAR_TRANSPORT} must be one of [\"stdio\", \"http\"], got {other:?}"
@@ -434,6 +464,19 @@ fn parse_bool(
                 "{var} must be \"true\" or \"false\", got {other:?}"
             ))),
         },
+    }
+}
+
+/// A human-readable rendering of the resolved `Host` allow-list for
+/// `--print-config`: `<loopback default>` when empty, `<validation disabled>`
+/// for the `*` sentinel, otherwise the comma-joined entries.
+fn describe_allowed_hosts(allowed_hosts: &[String]) -> String {
+    if allowed_hosts.is_empty() {
+        "<loopback default>".to_string()
+    } else if allowed_hosts == ["*"] {
+        "<validation disabled>".to_string()
+    } else {
+        allowed_hosts.join(", ")
     }
 }
 
@@ -488,7 +531,8 @@ mod tests {
             cfg.transport,
             Transport::Http {
                 bind: default_http_bind(),
-                bearer: None
+                bearer: None,
+                allowed_hosts: vec![],
             }
         );
         assert_eq!(cfg.timezone, Tz::UTC);
@@ -609,7 +653,7 @@ mod tests {
         // Non-loopback but authenticated → not flagged.
         assert!(!cfg.transport.is_unauthenticated_non_loopback());
         match cfg.transport {
-            Transport::Http { bind, bearer } => {
+            Transport::Http { bind, bearer, .. } => {
                 assert_eq!(bind.to_string(), "0.0.0.0:9000");
                 assert_eq!(bearer.as_deref(), Some("secret"));
             }
@@ -657,6 +701,85 @@ mod tests {
             Config::build(&|k| overrides.get(k).cloned().or_else(|| env.get(k).cloned())).unwrap();
         match cfg.transport {
             Transport::Http { bind, .. } => assert_eq!(bind.to_string(), "0.0.0.0:9000"),
+            _ => panic!("expected http"),
+        }
+    }
+
+    #[test]
+    fn http_allowed_hosts_default_empty() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(&tmp, &[])).unwrap();
+        match cfg.transport {
+            Transport::Http { allowed_hosts, .. } => assert!(allowed_hosts.is_empty()),
+            _ => panic!("expected http"),
+        }
+    }
+
+    #[test]
+    fn http_allowed_hosts_parsed_and_trimmed() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(
+            &tmp,
+            &[(
+                VAR_HTTP_ALLOWED_HOSTS,
+                " agentmem.svc.cluster.local , agentmem.example.com:8000 , ",
+            )],
+        ))
+        .unwrap();
+        match cfg.transport {
+            Transport::Http { allowed_hosts, .. } => assert_eq!(
+                allowed_hosts,
+                vec!["agentmem.svc.cluster.local", "agentmem.example.com:8000"]
+            ),
+            _ => panic!("expected http"),
+        }
+    }
+
+    #[test]
+    fn http_allowed_hosts_wildcard_retained() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(&tmp, &[(VAR_HTTP_ALLOWED_HOSTS, "*")])).unwrap();
+        match cfg.transport {
+            Transport::Http { allowed_hosts, .. } => assert_eq!(allowed_hosts, vec!["*"]),
+            _ => panic!("expected http"),
+        }
+    }
+
+    #[test]
+    fn stdio_ignores_http_allowed_hosts() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_TRANSPORT, "stdio"),
+                (VAR_HTTP_ALLOWED_HOSTS, "example.com"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(cfg.transport, Transport::Stdio);
+    }
+
+    #[test]
+    fn cli_overrides_env_for_http_allowed_hosts() {
+        let tmp = TempDir::new().unwrap();
+        let cli = Cli {
+            root_dir: Some(tmp.path().to_path_buf()),
+            http_allowed_hosts: Some("from-cli.example.com".to_string()),
+            ..Default::default()
+        };
+        let overrides = cli.as_overrides();
+        let env: HashMap<String, String> = [(
+            VAR_HTTP_ALLOWED_HOSTS.to_string(),
+            "from-env.example.com".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let cfg =
+            Config::build(&|k| overrides.get(k).cloned().or_else(|| env.get(k).cloned())).unwrap();
+        match cfg.transport {
+            Transport::Http { allowed_hosts, .. } => {
+                assert_eq!(allowed_hosts, vec!["from-cli.example.com"])
+            }
             _ => panic!("expected http"),
         }
     }

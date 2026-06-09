@@ -33,6 +33,14 @@ individual tenants — it is a coarse gate, not per-scope authorization.
 > deployments, set `AGENTMEM_HTTP_BEARER` and bind a non-loopback interface only
 > behind a trusted network boundary.
 
+The HTTP transport also enforces **DNS-rebinding protection** on the inbound
+`Host` header. By default only loopback hosts (`localhost`, `127.0.0.1`, `::1`)
+are accepted; off-host clients addressing the server by a Kubernetes Service DNS
+name or ingress hostname must be allow-listed via `AGENTMEM_HTTP_ALLOWED_HOSTS`,
+or their requests are rejected with `403`. Keep the list as tight as the
+deployment allows; reserve the `*` opt-out for cases where an upstream proxy or
+ingress already validates `Host`.
+
 ## Traversal is not trusted
 
 Every client-supplied virtual path is validated and normalised:

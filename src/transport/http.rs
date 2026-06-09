@@ -26,9 +26,14 @@ use crate::error::AgentmemError;
 use crate::mcp::AgentmemServer;
 
 /// Serve over Streamable HTTP, binding `bind` until a termination signal arrives.
+///
+/// `allowed_hosts` configures the transport's inbound `Host` validation: an empty
+/// list keeps `rmcp`'s loopback-only default (`localhost`, `127.0.0.1`, `::1`),
+/// the sole entry `*` disables validation, and any other list is used verbatim.
 pub async fn serve(
     bind: SocketAddr,
     bearer: Option<String>,
+    allowed_hosts: Vec<String>,
     server: AgentmemServer,
 ) -> anyhow::Result<()> {
     if bearer.is_none() {
@@ -42,13 +47,27 @@ pub async fn serve(
         }
     }
 
+    let http_config = if allowed_hosts.is_empty() {
+        // No override: keep rmcp's loopback-only DNS-rebinding default.
+        StreamableHttpServerConfig::default()
+    } else if allowed_hosts == ["*"] {
+        tracing::warn!(
+            "AGENTMEM_HTTP_ALLOWED_HOSTS=* disables Host validation; \
+             any Host header will be accepted"
+        );
+        StreamableHttpServerConfig::default().disable_allowed_hosts()
+    } else {
+        tracing::info!(allowed_hosts = %allowed_hosts.join(", "), "Host validation allow-list");
+        StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts)
+    };
+
     let mcp_service = StreamableHttpService::new(
         {
             let server = server.clone();
             move || Ok(server.clone())
         },
         Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default(),
+        http_config,
     );
 
     // The gated sub-router carries the MCP service and the `/v1/context` read

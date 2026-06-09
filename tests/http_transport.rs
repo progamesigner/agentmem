@@ -17,6 +17,16 @@ use tokio::process::{Child, Command};
 /// exercises the default `127.0.0.1:8000`. Stderr is piped so warnings can be
 /// inspected.
 fn spawn(root: &std::path::Path, bind: Option<&str>, bearer: Option<&str>) -> Child {
+    spawn_full(root, bind, bearer, None)
+}
+
+/// Like [`spawn`], with an optional `AGENTMEM_HTTP_ALLOWED_HOSTS` value.
+fn spawn_full(
+    root: &std::path::Path,
+    bind: Option<&str>,
+    bearer: Option<&str>,
+    allowed_hosts: Option<&str>,
+) -> Child {
     let bin = env!("CARGO_BIN_EXE_agentmem");
     let mut cmd = Command::new(bin);
     cmd.env("AGENTMEM_ROOT_DIR", root)
@@ -30,7 +40,28 @@ fn spawn(root: &std::path::Path, bind: Option<&str>, bearer: Option<&str>) -> Ch
     if let Some(token) = bearer {
         cmd.env("AGENTMEM_HTTP_BEARER", token);
     }
+    if let Some(hosts) = allowed_hosts {
+        cmd.env("AGENTMEM_HTTP_ALLOWED_HOSTS", hosts);
+    }
     cmd.spawn().expect("spawn agentmem")
+}
+
+/// `POST /mcp` carrying an explicit `Host` header, returning the HTTP status.
+/// rmcp's DNS-rebinding gate answers `403` before any MCP processing when the
+/// `Host` is not allowed; an allowed `Host` falls through to MCP handling
+/// (which, for this minimal body, is any non-`403` status).
+async fn mcp_post_status(base: &str, host: &str) -> u16 {
+    reqwest::Client::new()
+        .post(format!("{base}/mcp"))
+        .header("Host", host)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","method":"ping","id":1}"#)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
 }
 
 /// Poll `GET /health` until it succeeds or the timeout elapses.
@@ -115,6 +146,80 @@ async fn http_non_loopback_without_bearer_warns_on_startup() {
 
     child.kill().await.unwrap();
     assert!(found, "expected a startup WARN naming AGENTMEM_HTTP_BEARER");
+}
+
+// --- Host validation (AGENTMEM_HTTP_ALLOWED_HOSTS) --------------------------
+
+#[tokio::test]
+async fn http_rejects_non_loopback_host_by_default() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18661";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await; // /health is not Host-gated.
+
+    // Default allow-list is loopback only, so a cluster DNS Host is rejected.
+    let status = mcp_post_status(&base, "agentmem.svc.cluster.local").await;
+    assert_eq!(
+        status, 403,
+        "non-loopback Host should be forbidden by default"
+    );
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn http_accepts_allowlisted_host() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18662";
+    let mut child = spawn_full(
+        tmp.path(),
+        Some(bind),
+        None,
+        Some("agentmem.svc.cluster.local"),
+    );
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    // The allow-listed Host clears the DNS-rebinding gate (non-403).
+    let status = mcp_post_status(&base, "agentmem.svc.cluster.local").await;
+    assert_ne!(status, 403, "allow-listed Host should pass validation");
+
+    // A Host outside the list is still rejected.
+    let status = mcp_post_status(&base, "evil.example.net").await;
+    assert_eq!(status, 403, "non-listed Host should remain forbidden");
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn http_wildcard_accepts_any_host() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18663";
+    let mut child = spawn_full(tmp.path(), Some(bind), None, Some("*"));
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    // With validation disabled, an arbitrary Host clears the gate.
+    let status = mcp_post_status(&base, "anything.example.org").await;
+    assert_ne!(status, 403, "wildcard should accept any Host");
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn http_loopback_host_accepted_when_unset() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18664";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    // The unchanged default still accepts loopback.
+    let status = mcp_post_status(&base, "127.0.0.1:18664").await;
+    assert_ne!(status, 403, "loopback Host must remain accepted by default");
+
+    child.kill().await.unwrap();
 }
 
 // --- GET /v1/context -------------------------------------------------------

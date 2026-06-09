@@ -62,6 +62,25 @@ Set `AGENTMEM_HTTP_BEARER` for any deployment reachable off-host — the endpoin
 is otherwise unauthenticated (a startup `WARN` is logged). Override any
 [configuration variable](#configuration) with `-e`.
 
+**Reachable by hostname (Kubernetes, ingress).** The http transport applies
+DNS-rebinding protection and, by default, only accepts the loopback hosts
+`localhost`, `127.0.0.1`, and `::1` in the inbound `Host` header. When clients
+reach the server through a Kubernetes Service DNS name or an ingress hostname,
+set `AGENTMEM_HTTP_ALLOWED_HOSTS` to those hostnames or every request is
+rejected with `403`:
+
+```sh
+docker run --rm -p 8000:8000 \
+  -e AGENTMEM_HTTP_BEARER=change-me \
+  -e AGENTMEM_HTTP_ALLOWED_HOSTS=agentmem.default.svc.cluster.local,agentmem.example.com \
+  -v "$PWD/vault:/vault" \
+  ghcr.io/progamesigner/agentmem:latest
+```
+
+A bare hostname matches any port; add `:port` to pin one. The single value `*`
+disables `Host` validation entirely — only appropriate when an upstream proxy or
+ingress already enforces `Host` trust.
+
 **Health checks.** The image has no shell, so it cannot carry a Docker
 `HEALTHCHECK`. Probe the `GET /health` route from your orchestrator instead:
 
@@ -108,6 +127,7 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_TRANSPORT` | `http` | `http` or `stdio`. |
 | `AGENTMEM_HTTP_BIND` | `127.0.0.1:8000` | HTTP bind address (http transport only). |
 | `AGENTMEM_HTTP_BEARER` | *(unset)* | If set, `POST/GET /mcp` requires `Authorization: Bearer <token>`. Unset → unauthenticated (a startup `WARN` is logged). |
+| `AGENTMEM_HTTP_ALLOWED_HOSTS` | *(unset)* | Comma-separated `Host` allow-list for the http transport's DNS-rebinding protection. Unset → loopback only (`localhost`, `127.0.0.1`, `::1`). List the cluster/ingress hostnames clients use (e.g. `agentmem.default.svc.cluster.local,agentmem.example.com:8000`); a bare hostname matches any port. The single value `*` disables `Host` validation (logs a `WARN`) — only for deployments that terminate `Host` trust at an upstream proxy. |
 | `AGENTMEM_TIMEZONE` | `UTC` | IANA timezone used to date diary entries. |
 | `AGENTMEM_HONOR_IGNORE_FILES` | `true` | Honour `.ignore` / `.gitignore` / `.obsidianignore` (nested, composed per-directory like `git`) for list and direct addressing. Strict boolean (`true`/`false`). |
 | `AGENTMEM_INCLUDE_HIDDEN` | `false` | Include dotfiles/dot-directories. Strict boolean. |
