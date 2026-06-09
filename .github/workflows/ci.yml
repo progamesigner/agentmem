@@ -41,13 +41,22 @@ jobs:
       run: cargo test
 
   release-binaries:
-    name: release ${{ matrix.target }}
+    name: release ${{ matrix.target }}${{ matrix.features && format(' (+{0})', matrix.features) || '' }}
     if: startsWith(github.ref, 'refs/tags/')
     needs: check
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Ship both the default `simple` backend and the opt-in tantivy recall
+        # variant for every target.
+        features:
+        - ''
+        - recall-tantivy
+        target:
+        - x86_64-unknown-linux-gnu
+        - aarch64-apple-darwin
+        - x86_64-pc-windows-msvc
         include:
         - target: x86_64-unknown-linux-gnu
           os: ubuntu-latest
@@ -66,12 +75,12 @@ jobs:
     - uses: Swatinem/rust-cache@v2
 
     - name: Build release binary
-      run: cargo build --release --target ${{ matrix.target }}
+      run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: agentmem-${{ matrix.target }}
+        name: agentmem-${{ matrix.target }}${{ matrix.features && format('-{0}', matrix.features) || '' }}
         path: |
           target/${{ matrix.target }}/release/agentmem
           target/${{ matrix.target }}/release/agentmem.exe
