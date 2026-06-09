@@ -27,6 +27,7 @@ fn toolbox(tmp: &TempDir, policy: Policy) -> Toolbox {
         policy,
         Tz::UTC,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        None,
     )
 }
 
