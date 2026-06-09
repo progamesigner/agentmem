@@ -82,16 +82,28 @@ disables `Host` validation entirely — only appropriate when an upstream proxy 
 ingress already enforces `Host` trust.
 
 **Health checks.** The image has no shell, so it cannot carry a Docker
-`HEALTHCHECK`. Probe the `GET /health` route from your orchestrator instead:
+`HEALTHCHECK`. Probe the HTTP routes from your orchestrator instead. There are
+two: `GET /healthz` (liveness — succeeds as soon as the process is up, never
+gated on the recall index) and `GET /readyz` (readiness — `503` until the recall
+index has finished its eager build, `200` thereafter, or immediately when recall
+is disabled). Both are reachable without a bearer token.
 
 ```yaml
 # Kubernetes — the kubelet probes over HTTP, nothing runs inside the container.
 livenessProbe:
-  httpGet: { path: /health, port: 8000 }
+  httpGet: { path: /healthz, port: 8000 }
+readinessProbe:
+  httpGet: { path: /readyz, port: 8000 }
+# A long cold build over a large vault fits a startupProbe with a high
+# failureThreshold, after which liveness/readiness take over.
+startupProbe:
+  httpGet: { path: /readyz, port: 8000 }
+  failureThreshold: 60
+  periodSeconds: 5
 ```
 
 A Docker Compose `healthcheck:` runs its command *inside* the container and so
-cannot work against this image (no shell, no `wget`/`curl`). Probe `/health`
+cannot work against this image (no shell, no `wget`/`curl`). Probe `/healthz`
 from outside instead — the orchestrator, a sidecar, or an external monitor.
 
 Every published image carries the full set of dynamic OCI labels
@@ -263,8 +275,8 @@ curl -H 'Accept: application/json' \
 Missing, empty, or unexpected scope parameters return `400` with a
 `{ "error": … }` body; absent foundational files are never errors. The route sits
 behind the same `AGENTMEM_HTTP_BEARER` gate as `/mcp` (add
-`-H "Authorization: Bearer <token>"` when a bearer is configured); only `/health`
-is always reachable.
+`-H "Authorization: Bearer <token>"` when a bearer is configured); only the
+`/healthz` and `/readyz` probes are always reachable.
 
 ## Policies
 
@@ -473,8 +485,9 @@ stdio sidecar, `url` for Local HTTP:
 For poking the HTTP transport directly, without an MCP client:
 
 ```sh
-# Liveness probe.
-curl http://127.0.0.1:8000/health
+# Liveness and readiness probes.
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/readyz
 
 # An MCP request (Streamable HTTP requires the dual Accept header).
 curl -X POST http://127.0.0.1:8000/mcp \

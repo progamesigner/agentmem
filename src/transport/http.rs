@@ -2,10 +2,10 @@
 //!
 //! Mounts the `rmcp` Streamable HTTP service at `POST`/`GET`/`DELETE /mcp` and a
 //! plain `GET /v1/context` read endpoint behind an `axum` router that also serves
-//! a `GET /health` liveness route. When `AGENTMEM_HTTP_BEARER` is set, an `axum`
-//! middleware enforces a matching `Authorization: Bearer <token>` header on the
-//! `/mcp` and `/v1/context` routes and returns HTTP 401 otherwise; `/health` is
-//! always reachable.
+//! the Kubernetes-style `GET /healthz` (liveness) and `GET /readyz` (readiness)
+//! probes. When `AGENTMEM_HTTP_BEARER` is set, an `axum` middleware enforces a
+//! matching `Authorization: Bearer <token>` header on the `/mcp` and `/v1/context`
+//! routes and returns HTTP 401 otherwise; the probe routes are always reachable.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -74,6 +74,13 @@ pub async fn serve(
     // endpoint; both inherit the bearer middleware when one is configured. The
     // `AgentmemServer` is wired in as handler state so `/v1/context` can reach
     // the shared renderer.
+    // Ungated probes: liveness never depends on the index (so an orchestrator
+    // won't kill a building pod), readiness reflects the eager index build.
+    let probes = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .with_state(server.clone());
+
     let mut gated = Router::new()
         .route_service("/mcp", mcp_service)
         .route("/v1/context", get(context))
@@ -82,7 +89,7 @@ pub async fn serve(
         gated = gated.layer(from_fn_with_state(Arc::new(token), require_bearer));
     }
 
-    let app = Router::new().route("/health", get(health)).merge(gated);
+    let app = probes.merge(gated);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind, "serving MCP over Streamable HTTP");
@@ -92,9 +99,21 @@ pub async fn serve(
     Ok(())
 }
 
-/// Liveness route.
-async fn health() -> &'static str {
+/// Liveness route. Always succeeds once the process is up — it never depends on
+/// the recall index, so a slow cold build cannot fail a liveness probe.
+async fn healthz() -> &'static str {
     "ok"
+}
+
+/// Readiness route. Reports `200` only once the recall index is built (or
+/// immediately when recall is disabled); `503` while the eager build is in flight,
+/// so traffic is held until the server can serve recall.
+async fn readyz(State(server): State<AgentmemServer>) -> Response {
+    if server.recall_ready() {
+        (StatusCode::OK, "ready").into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "indexing").into_response()
+    }
 }
 
 /// `GET /v1/context` — render the per-scope session-context bootstrap.

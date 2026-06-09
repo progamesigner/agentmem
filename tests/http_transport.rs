@@ -64,11 +64,13 @@ async fn mcp_post_status(base: &str, host: &str) -> u16 {
         .as_u16()
 }
 
-/// Poll `GET /health` until it succeeds or the timeout elapses.
+/// Poll `GET /healthz` until it succeeds or the timeout elapses. The budget is
+/// generous because the suite spawns many servers in parallel, each starting its
+/// own recall warm-up at boot.
 async fn wait_health(base: &str) {
     let client = reqwest::Client::new();
-    for _ in 0..100 {
-        if let Ok(resp) = client.get(format!("{base}/health")).send().await {
+    for _ in 0..200 {
+        if let Ok(resp) = client.get(format!("{base}/healthz")).send().await {
             if resp.status().is_success() {
                 return;
             }
@@ -103,13 +105,41 @@ async fn http_default_bind_health_and_mcp_roundtrip() {
 }
 
 #[tokio::test]
+async fn http_readyz_and_healthz_probes() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18657";
+    // A bearer is set so we also confirm the probes need no Authorization header.
+    let mut child = spawn(tmp.path(), Some(bind), Some("s3cret"));
+    let base = format!("http://{bind}");
+    let client = reqwest::Client::new();
+
+    // Liveness comes up with the process, with no bearer token.
+    wait_health(&base).await;
+
+    // Readiness flips to 200 once the eager index build completes (also ungated).
+    let mut ready = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client.get(format!("{base}/readyz")).send().await
+            && resp.status().is_success()
+        {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(ready, "/readyz never reported ready");
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
 async fn http_unauthenticated_request_is_rejected_when_bearer_set() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let bind = "127.0.0.1:18651";
     let mut child = spawn(tmp.path(), Some(bind), Some("s3cret"));
     let base = format!("http://{bind}");
 
-    // /health is unauthenticated, so it is the readiness probe.
+    // /healthz is unauthenticated, so it is the readiness probe.
     wait_health(&base).await;
 
     let client = reqwest::Client::new();
@@ -158,7 +188,7 @@ async fn http_rejects_non_loopback_host_by_default() {
     let bind = "127.0.0.1:18661";
     let mut child = spawn(tmp.path(), Some(bind), None);
     let base = format!("http://{bind}");
-    wait_health(&base).await; // /health is not Host-gated.
+    wait_health(&base).await; // /healthz is not Host-gated.
 
     // Default allow-list is loopback only, so a cluster DNS Host is rejected.
     let status = mcp_post_status(&base, "agentmem.svc.cluster.local").await;
@@ -351,7 +381,7 @@ async fn context_endpoint_honours_bearer() {
     let bind = "127.0.0.1:18655";
     let mut child = spawn(tmp.path(), Some(bind), Some("s3cret"));
     let base = format!("http://{bind}");
-    wait_health(&base).await; // /health stays reachable without auth.
+    wait_health(&base).await; // /healthz stays reachable without auth.
 
     let client = reqwest::Client::new();
     let url = format!("{base}/v1/context?agent=default&user=alice");

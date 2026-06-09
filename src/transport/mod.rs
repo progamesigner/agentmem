@@ -38,6 +38,10 @@ pub(crate) async fn shutdown_signal() {
 /// Serve the MCP server on the transport configured in `config`, blocking until
 /// the server terminates (signal, closed stdin, or fatal error).
 pub async fn serve(config: &Config, server: AgentmemServer) -> anyhow::Result<()> {
+    // Start the recall watcher and kick off the eager index build in the
+    // background, so liveness stays up while `GET /readyz` reports not-ready until
+    // every index is built.
+    server.spawn_recall_warmup();
     match &config.transport {
         Transport::Stdio => stdio::serve(server).await,
         #[cfg(feature = "transport-http")]
