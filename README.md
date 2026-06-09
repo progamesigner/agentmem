@@ -340,8 +340,12 @@ Every MCP client connects over one of the two transports:
 - **Local HTTP** — you run `agentmem` yourself (HTTP is the default transport, on
   `127.0.0.1:8000`) and point the client at `http://127.0.0.1:8000/mcp`. Start the
   server *before* the client connects.
+- **Docker sidecar** — a stdio sidecar that needs no local `agentmem` binary: the
+  client launches `docker run -i ... ghcr.io/progamesigner/agentmem:latest`, which
+  speaks stdio over the container's stdin/stdout. The image already sets
+  `AGENTMEM_ROOT_DIR=/vault`, so mount your vault there.
 
-The snippets below show both transports per client. When `AGENTMEM_HTTP_BEARER`
+The snippets below show all three per client. When `AGENTMEM_HTTP_BEARER`
 is set, attach `Authorization: Bearer <token>` through whatever header mechanism
 the client exposes (noted inline where relevant).
 
@@ -358,6 +362,15 @@ the client exposes (noted inline where relevant).
         "AGENTMEM_ROOT_DIR": "/Users/me/vault",
         "AGENTMEM_TRANSPORT": "stdio"
       }
+    },
+    "agentmem-docker": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "AGENTMEM_TRANSPORT=stdio",
+        "-v", "/Users/me/vault:/vault",
+        "ghcr.io/progamesigner/agentmem:latest"
+      ]
     }
   }
 }
@@ -389,6 +402,15 @@ stdio, `type`/`url` for HTTP):
     "agentmem-http": {
       "type": "http",
       "url": "http://127.0.0.1:8000/mcp"
+    },
+    "agentmem-docker": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "AGENTMEM_TRANSPORT=stdio",
+        "-v", "/path/to/vault:/vault",
+        "ghcr.io/progamesigner/agentmem:latest"
+      ]
     }
   }
 }
@@ -409,6 +431,11 @@ env = { AGENTMEM_ROOT_DIR = "/path/to/vault", AGENTMEM_TRANSPORT = "stdio" }
 [mcp_servers.agentmem]
 url = "http://127.0.0.1:8000/mcp"
 # bearer_token_env_var = "AGENTMEM_TOKEN"   # if AGENTMEM_HTTP_BEARER is set
+
+# …or a Docker stdio sidecar (no local binary needed)
+[mcp_servers.agentmem-docker]
+command = "docker"
+args = ["run", "-i", "--rm", "-e", "AGENTMEM_TRANSPORT=stdio", "-v", "/path/to/vault:/vault", "ghcr.io/progamesigner/agentmem:latest"]
 ```
 
 `codex mcp add agentmem -- agentmem` is the stdio shortcut; HTTP servers are added
@@ -429,6 +456,15 @@ top-level key is `mcpServers`, and HTTP uses **`serverUrl`** — *not* `url`:
     },
     "agentmem-http": {
       "serverUrl": "http://127.0.0.1:8000/mcp"
+    },
+    "agentmem-docker": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "AGENTMEM_TRANSPORT=stdio",
+        "-v", "/path/to/vault:/vault",
+        "ghcr.io/progamesigner/agentmem:latest"
+      ]
     }
   }
 }
@@ -455,6 +491,16 @@ explicit `type`. Optional `inputs` prompt for secrets:
       "type": "http",
       "url": "http://127.0.0.1:8000/mcp",
       "headers": { "Authorization": "Bearer ${input:agentmem-token}" }
+    },
+    "agentmem-docker": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "AGENTMEM_TRANSPORT=stdio",
+        "-v", "${workspaceFolder}/vault:/vault",
+        "ghcr.io/progamesigner/agentmem:latest"
+      ]
     }
   }
 }
@@ -490,6 +536,11 @@ workspaces in your user profile — open the latter via the command palette
       "type": "remote",
       "url": "http://127.0.0.1:8000/mcp",
       "enabled": true
+    },
+    "agentmem-docker": {
+      "type": "local",
+      "command": ["docker", "run", "-i", "--rm", "-e", "AGENTMEM_TRANSPORT=stdio", "-v", "/path/to/vault:/vault", "ghcr.io/progamesigner/agentmem:latest"],
+      "enabled": true
     }
   }
 }
@@ -511,6 +562,15 @@ stdio sidecar, `url` for Local HTTP:
     },
     "agentmem-http": {
       "url": "http://127.0.0.1:8000/mcp"
+    },
+    "agentmem-docker": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "AGENTMEM_TRANSPORT=stdio",
+        "-v", "/path/to/vault:/vault",
+        "ghcr.io/progamesigner/agentmem:latest"
+      ]
     }
   }
 }
