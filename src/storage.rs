@@ -378,7 +378,7 @@ impl Storage {
     }
 
     /// The rendered-scope directory names directly under the agents folder (e.g.
-    /// `coder.alice`). Each names one per-scope region; used by the recall engine
+    /// `jarvis.tony`). Each names one per-scope region; used by the recall engine
     /// to enumerate every scope for its eager startup build. Returns an empty list
     /// when the agents folder is the vault root (single-tenant: there are no
     /// per-scope directories).
@@ -590,7 +590,7 @@ mod tests {
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         let physical = s
             .resolver
-            .resolve("coder.alice", &vp("Agents/PERSONA.md"))
+            .resolve("jarvis.tony", &vp("Agents/PERSONA.md"))
             .unwrap();
         let n = s.write_atomic(&physical, "hello").unwrap();
         assert_eq!(n, 5);
@@ -603,7 +603,7 @@ mod tests {
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         let physical = s
             .resolver
-            .resolve("coder.alice", &vp("Agents/missing.md"))
+            .resolve("jarvis.tony", &vp("Agents/missing.md"))
             .unwrap();
         assert!(matches!(
             s.read(&physical),
@@ -617,7 +617,7 @@ mod tests {
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         let physical = s
             .resolver
-            .resolve("coder.alice", &vp("Agents/deep/nested/note.md"))
+            .resolve("jarvis.tony", &vp("Agents/deep/nested/note.md"))
             .unwrap();
         s.write_atomic(&physical, "x").unwrap();
         assert!(physical.as_path().exists());
@@ -629,7 +629,7 @@ mod tests {
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         let physical = s
             .resolver
-            .resolve("coder.alice", &vp("Agents/n.md"))
+            .resolve("jarvis.tony", &vp("Agents/n.md"))
             .unwrap();
 
         s.write_atomic(&physical, "alpha beta gamma").unwrap();
@@ -654,7 +654,7 @@ mod tests {
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         let physical = s
             .resolver
-            .resolve("coder.alice", &vp("Agents/d.md"))
+            .resolve("jarvis.tony", &vp("Agents/d.md"))
             .unwrap();
         s.write_atomic(&physical, "x").unwrap();
         s.delete(&physical).unwrap();
@@ -670,14 +670,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         for (scope, name) in [
-            ("coder.alice", "Agents/notes.md"),
-            ("coder.bob", "Agents/notes.md"),
-            ("writer.alice", "Agents/notes.md"),
+            ("jarvis.tony", "Agents/notes.md"),
+            ("jarvis.sam", "Agents/notes.md"),
+            ("friday.tony", "Agents/notes.md"),
         ] {
             let p = s.resolver.resolve(scope, &vp(name)).unwrap();
             s.write_atomic(&p, "x").unwrap();
         }
-        let listed = s.list_inside_agents_folder("coder.alice").unwrap();
+        let listed = s.list_inside_agents_folder("jarvis.tony").unwrap();
         let strs: Vec<_> = listed.iter().map(|p| p.as_str().to_string()).collect();
         assert_eq!(strs, vec!["Agents/notes.md"]);
     }
@@ -922,8 +922,8 @@ mod tests {
         let s = storage(&tmp, "Agents", "<agent>.<user>", true, false);
         // Own scope, another scope, and a shared note.
         for (scope, name) in [
-            ("coder.alice", "Agents/topics/rust.md"),
-            ("coder.bob", "Agents/topics/rust.md"),
+            ("jarvis.tony", "Agents/topics/rust.md"),
+            ("jarvis.sam", "Agents/topics/rust.md"),
         ] {
             let p = s.resolver.resolve(scope, &vp(name)).unwrap();
             s.write_atomic(&p, "x").unwrap();
@@ -933,12 +933,12 @@ mod tests {
 
         let index = s
             .build_link_index(
-                "coder.alice",
+                "jarvis.tony",
                 &[Region::InsideAgentsFolder, Region::OutsideAgentsFolder],
             )
             .unwrap();
 
-        // Own-scope `rust` is present and tagged inside; bob's is not a candidate.
+        // Own-scope `rust` is present and tagged inside; sam's is not a candidate.
         let rust = index.entries_for_basename("rust");
         assert_eq!(rust.len(), 1, "only the caller's own rust.md is indexed");
         assert_eq!(rust[0].clean_path, "Agents/topics/rust");
@@ -977,7 +977,7 @@ mod tests {
         let s = Arc::new(storage(&tmp, "Agents", "<agent>.<user>", true, false));
         let physical = Arc::new(
             s.resolver
-                .resolve("coder.alice", &vp("Agents/diary/d.md"))
+                .resolve("jarvis.tony", &vp("Agents/diary/d.md"))
                 .unwrap(),
         );
 

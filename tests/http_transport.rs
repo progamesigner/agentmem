@@ -266,7 +266,7 @@ async fn context_endpoint_renders_markdown_bootstrap() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("{base}/v1/context?agent=default&user=alice"))
+        .get(format!("{base}/v1/context?agent=jarvis&user=tony"))
         .send()
         .await
         .unwrap();
@@ -299,7 +299,7 @@ async fn context_endpoint_json_negotiation_reports_missing() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!("{base}/v1/context?agent=default&user=alice"))
+        .get(format!("{base}/v1/context?agent=jarvis&user=tony"))
         .header("Accept", "application/json")
         .send()
         .await
@@ -342,7 +342,7 @@ async fn context_endpoint_rejects_invalid_scope() {
 
     // Missing placeholder `user`.
     let resp = client
-        .get(format!("{base}/v1/context?agent=default"))
+        .get(format!("{base}/v1/context?agent=jarvis"))
         .send()
         .await
         .unwrap();
@@ -352,7 +352,7 @@ async fn context_endpoint_rejects_invalid_scope() {
 
     // Empty value for `user`.
     let resp = client
-        .get(format!("{base}/v1/context?agent=default&user="))
+        .get(format!("{base}/v1/context?agent=jarvis&user="))
         .send()
         .await
         .unwrap();
@@ -363,7 +363,7 @@ async fn context_endpoint_rejects_invalid_scope() {
     // Unexpected parameter `role`.
     let resp = client
         .get(format!(
-            "{base}/v1/context?agent=default&user=alice&role=admin"
+            "{base}/v1/context?agent=jarvis&user=tony&role=admin"
         ))
         .send()
         .await
@@ -384,7 +384,7 @@ async fn context_endpoint_honours_bearer() {
     wait_health(&base).await; // /healthz stays reachable without auth.
 
     let client = reqwest::Client::new();
-    let url = format!("{base}/v1/context?agent=default&user=alice");
+    let url = format!("{base}/v1/context?agent=jarvis&user=tony");
 
     // No bearer → 401.
     let resp = client.get(&url).send().await.unwrap();
@@ -414,7 +414,7 @@ async fn context_endpoint_matches_load_session_context_tool() {
     // Rendered markdown from the plain HTTP endpoint.
     let client = reqwest::Client::new();
     let http_body = client
-        .get(format!("{base}/v1/context?agent=default&user=alice"))
+        .get(format!("{base}/v1/context?agent=jarvis&user=tony"))
         .send()
         .await
         .unwrap()
@@ -429,8 +429,8 @@ async fn context_endpoint_matches_load_session_context_tool() {
     );
     let service = ().serve(transport).await.expect("mcp initialize");
     let mut arguments = serde_json::Map::new();
-    arguments.insert("agent".into(), serde_json::json!("default"));
-    arguments.insert("user".into(), serde_json::json!("alice"));
+    arguments.insert("agent".into(), serde_json::json!("jarvis"));
+    arguments.insert("user".into(), serde_json::json!("tony"));
     let result = service
         .call_tool(CallToolRequestParams::new("load_session_context").with_arguments(arguments))
         .await

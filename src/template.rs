@@ -110,8 +110,8 @@ mod tests {
     #[test]
     fn substitutes_recognised_keys() {
         let t = Template::parse("Hello {{name}}, welcome to {{place}}.");
-        let r = t.render(&ctx(&[("name", "alice"), ("place", "the vault")]));
-        assert_eq!(r.text, "Hello alice, welcome to the vault.");
+        let r = t.render(&ctx(&[("name", "tony"), ("place", "the vault")]));
+        assert_eq!(r.text, "Hello tony, welcome to the vault.");
         assert!(r.unknown.is_empty());
     }
 
@@ -126,8 +126,8 @@ mod tests {
     #[test]
     fn dotted_keys_and_whitespace_are_trimmed() {
         let t = Template::parse("{{ files.persona }} / {{scope.agent}}");
-        let r = t.render(&ctx(&[("files.persona", "P"), ("scope.agent", "coder")]));
-        assert_eq!(r.text, "P / coder");
+        let r = t.render(&ctx(&[("files.persona", "P"), ("scope.agent", "jarvis")]));
+        assert_eq!(r.text, "P / jarvis");
     }
 
     #[test]

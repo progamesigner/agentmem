@@ -40,7 +40,7 @@ fn read_content(tb: &Toolbox, path: &str) -> String {
     let res = call(
         tb,
         "read_memory_note",
-        json!({"agent":"coder","user":"alice","path":path}),
+        json!({"agent":"jarvis","user":"tony","path":path}),
     )
     .expect("read ok");
     res.structured_content.unwrap()["content"]
@@ -54,7 +54,7 @@ fn seed_rust(tb: &Toolbox) {
     call(
         tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/rust.md","content":"the rust note"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"the rust note"}),
     )
     .unwrap();
 }
@@ -67,16 +67,16 @@ fn write_expands_own_scope_link_on_disk_and_read_strips_it() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/notes/index.md","content":"see [[rust]]"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/index.md","content":"see [[rust]]"}),
     )
     .unwrap();
 
     // On disk the link carries the caller's suffix so Obsidian can resolve it.
     let physical = tmp
         .path()
-        .join("Agents/coder.alice/notes/index.coder.alice.md");
+        .join("Agents/jarvis.tony/notes/index.jarvis.tony.md");
     let raw = std::fs::read_to_string(&physical).unwrap();
-    assert_eq!(raw, "see [[rust.coder.alice]]");
+    assert_eq!(raw, "see [[rust.jarvis.tony]]");
 
     // Read presents only the clean shortest name.
     assert_eq!(read_content(&tb, "Agents/notes/index.md"), "see [[rust]]");
@@ -90,7 +90,7 @@ fn edit_search_matches_clean_link_form() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/notes/index.md","content":"see [[rust]] here"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/index.md","content":"see [[rust]] here"}),
     )
     .unwrap();
 
@@ -100,7 +100,7 @@ fn edit_search_matches_clean_link_form() {
         &tb,
         "edit_memory_note",
         json!({
-            "agent":"coder","user":"alice","path":"Agents/notes/index.md",
+            "agent":"jarvis","user":"tony","path":"Agents/notes/index.md",
             "search_string":"see [[rust]] here","replace_string":"now [[rust]] there"
         }),
     )
@@ -120,7 +120,7 @@ fn shared_file_linking_to_scoped_note_is_rejected() {
     let res = call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Actions/release.md","content":"ship [[rust]]"}),
+        json!({"agent":"jarvis","user":"tony","path":"Actions/release.md","content":"ship [[rust]]"}),
     );
     match res {
         Err(e) => assert_eq!(e.code().as_str(), "write_denied"),
@@ -137,7 +137,7 @@ fn dangling_link_is_preserved() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/notes/index.md","content":"see [[ghost]]"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/index.md","content":"see [[ghost]]"}),
     )
     .unwrap();
     assert_eq!(read_content(&tb, "Agents/notes/index.md"), "see [[ghost]]");
@@ -152,22 +152,22 @@ fn core_file_links_expand_on_disk_and_strip_in_session_context() {
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"memory","content":"- [[rust]] — the rust note"}),
+        json!({"agent":"jarvis","user":"tony","which":"memory","content":"- [[rust]] — the rust note"}),
     )
     .unwrap();
 
     // On disk the core file carries the suffixed link (Obsidian-resolvable).
-    let physical = tmp.path().join("Agents/coder.alice/MEMORY.coder.alice.md");
+    let physical = tmp.path().join("Agents/jarvis.tony/MEMORY.jarvis.tony.md");
     assert_eq!(
         std::fs::read_to_string(&physical).unwrap(),
-        "- [[rust.coder.alice]] — the rust note"
+        "- [[rust.jarvis.tony]] — the rust note"
     );
 
     // load_session_context renders the clean shortest name.
     let rendered = call(
         &tb,
         "load_session_context",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     )
     .unwrap()
     .structured_content
@@ -176,7 +176,7 @@ fn core_file_links_expand_on_disk_and_strip_in_session_context() {
         .unwrap()
         .to_string();
     assert!(rendered.contains("- [[rust]] — the rust note"));
-    assert!(!rendered.contains("rust.coder.alice"));
+    assert!(!rendered.contains("rust.jarvis.tony"));
 }
 
 #[test]
@@ -187,15 +187,15 @@ fn heartbeat_links_expand_on_disk() {
     call(
         &tb,
         "update_task_heartbeat",
-        json!({"agent":"coder","user":"alice","content":"working on [[rust]]"}),
+        json!({"agent":"jarvis","user":"tony","content":"working on [[rust]]"}),
     )
     .unwrap();
     let physical = tmp
         .path()
-        .join("Agents/coder.alice/HEARTBEAT.coder.alice.md");
+        .join("Agents/jarvis.tony/HEARTBEAT.jarvis.tony.md");
     assert_eq!(
         std::fs::read_to_string(&physical).unwrap(),
-        "working on [[rust.coder.alice]]"
+        "working on [[rust.jarvis.tony]]"
     );
     // Reading it back via read_memory_note strips the suffix.
     assert_eq!(
@@ -216,14 +216,14 @@ fn shared_link_from_own_scope_note_stays_clean() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/notes/index.md","content":"see [[release]]"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/index.md","content":"see [[release]]"}),
     )
     .unwrap();
 
     // Persisted without a suffix (shared notes resolve for every scope).
     let physical = tmp
         .path()
-        .join("Agents/coder.alice/notes/index.coder.alice.md");
+        .join("Agents/jarvis.tony/notes/index.jarvis.tony.md");
     assert_eq!(
         std::fs::read_to_string(&physical).unwrap(),
         "see [[release]]"

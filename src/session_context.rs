@@ -236,7 +236,7 @@ fn agents_vpath(storage: &Storage, relative: &str) -> Result<VirtualPath, Agentm
 
 /// Build the memory-tools guide from the live tool catalogue, naming the
 /// concrete active scope so the agent knows exactly which keys/values to carry
-/// on every call (e.g. `agent=coder, user=alice`).
+/// on every call (e.g. `agent=jarvis, user=tony`).
 fn tools_guide(tools: &[Tool], scope: &BTreeMap<String, String>) -> String {
     let mut out = if scope.is_empty() {
         String::from(
@@ -393,12 +393,12 @@ mod tests {
             &storage,
             &global,
             std::slice::from_ref(&tool),
-            &scope(&[("agent", "coder"), ("user", "alice")]),
+            &scope(&[("agent", "jarvis"), ("user", "tony")]),
         )
         .unwrap();
         assert!(
             sc.rendered
-                .contains("Every call must carry these scope keys: agent=coder, user=alice.")
+                .contains("Every call must carry these scope keys: agent=jarvis, user=tony.")
         );
         assert!(
             sc.rendered
@@ -425,22 +425,22 @@ mod tests {
     fn file_and_scope_namespaces_are_distinct() {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
-        write(&tmp, "Agents/c.alice/USER.c.alice.md", "USER-FILE-BODY");
+        write(&tmp, "Agents/c.tony/USER.c.tony.md", "USER-FILE-BODY");
         let global = tmp.path().join("missing.md");
         // Per-scope template exercising both namespaces.
         write(
             &tmp,
-            "Agents/c.alice/AGENT_SESSION_CONTEXT.c.alice.md",
+            "Agents/c.tony/AGENT_SESSION_CONTEXT.c.tony.md",
             "file={{files.user}} scope={{scope.user}}",
         );
         let sc = render_session_context(
             &storage,
             &global,
             &[],
-            &scope(&[("agent", "c"), ("user", "alice")]),
+            &scope(&[("agent", "c"), ("user", "tony")]),
         )
         .unwrap();
-        assert_eq!(sc.rendered, "file=USER-FILE-BODY scope=alice");
+        assert_eq!(sc.rendered, "file=USER-FILE-BODY scope=tony");
     }
 
     /// Per-scope template wins over the global file, which wins over the default.

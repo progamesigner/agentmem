@@ -58,11 +58,11 @@ Every client-supplied virtual path is validated and normalised:
 Inside the agents folder, with a non-empty scheme, the resolver appends the
 caller's rendered scope as both the first directory segment and the file-stem
 suffix on **every** read, write, edit, and delete. A request for `PERSONA.md` from
-`{agent: coder, user: alice}` can only ever resolve to
-`Agents/coder.alice/PERSONA.coder.alice.md`. There is no virtual path — legitimate
+`{agent: jarvis, user: tony}` can only ever resolve to
+`Agents/jarvis.tony/PERSONA.jarvis.tony.md`. There is no virtual path — legitimate
 or crafted — that addresses another scope's file: a crafted path such as
-`Agents/PERSONA.coder.bob.md` still resolves under `coder.alice` and lands at
-`Agents/coder.alice/PERSONA.coder.bob.coder.alice.md`, never bob's file. Listings
+`Agents/PERSONA.jarvis.sam.md` still resolves under `jarvis.tony` and lands at
+`Agents/jarvis.tony/PERSONA.jarvis.sam.jarvis.tony.md`, never sam's file. Listings
 likewise filter by the caller's own suffix, so other scopes' files are invisible.
 
 An empty scheme (`AGENTMEM_VFS_SCHEME=`) disables suffixing: the agents folder

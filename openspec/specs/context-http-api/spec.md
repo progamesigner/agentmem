@@ -12,10 +12,10 @@ resource, and the `session-context` prompt. The route SHALL exist only when the
 binary is built with the `transport-http` feature and the HTTP transport is selected.
 
 #### Scenario: Endpoint renders the bootstrap
-- **WHEN** a client issues `GET /v1/context?agent=default&user=alice` against a
+- **WHEN** a client issues `GET /v1/context?agent=jarvis&user=tony` against a
   server whose scheme is `<agent>.<user>`
 - **THEN** the server responds `200 OK` with the rendered session-context for
-  the scope `{agent: "default", user: "alice"}`, identical to what
+  the scope `{agent: "jarvis", user: "tony"}`, identical to what
   `load_session_context` would return for the same scope
 
 #### Scenario: Rendering never errors on absent files
@@ -38,23 +38,23 @@ When the scheme is empty, the endpoint SHALL require no parameters.
 
 #### Scenario: All placeholders supplied
 - **WHEN** the scheme is `<team>.<agent>.<env>.<user>` and the request carries
-  `?team=t&agent=a&env=prod&user=alice`
-- **THEN** the server binds the scope `{team: "t", agent: "a", env: "prod", user: "alice"}`
+  `?team=t&agent=a&env=prod&user=tony`
+- **THEN** the server binds the scope `{team: "t", agent: "a", env: "prod", user: "tony"}`
   and responds `200 OK`
 
 #### Scenario: Missing placeholder is rejected
-- **WHEN** the scheme is `<agent>.<user>` and the request carries only `?agent=default`
+- **WHEN** the scheme is `<agent>.<user>` and the request carries only `?agent=jarvis`
 - **THEN** the server responds `400 Bad Request` with a JSON body that names the
   missing scope key `user`
 
 #### Scenario: Empty placeholder value is rejected
-- **WHEN** the request carries `?agent=default&user=` (empty value)
+- **WHEN** the request carries `?agent=jarvis&user=` (empty value)
 - **THEN** the server responds `400 Bad Request` with a JSON body that names the
   offending scope key
 
 #### Scenario: Unexpected parameter is rejected
 - **WHEN** the scheme is `<agent>.<user>` and the request carries
-  `?agent=default&user=alice&role=admin`
+  `?agent=jarvis&user=tony&role=admin`
 - **THEN** the server responds `400 Bad Request` with a JSON body that names the
   unexpected parameter `role`
 
@@ -71,13 +71,13 @@ prefers `application/json`, the endpoint SHALL instead return a JSON object
 `load_session_context` tool result, with `Content-Type: application/json`.
 
 #### Scenario: Default is markdown
-- **WHEN** `GET /v1/context?agent=default&user=alice` is sent without an `Accept`
+- **WHEN** `GET /v1/context?agent=jarvis&user=tony` is sent without an `Accept`
   header (or with `Accept: text/markdown` or `*/*`)
 - **THEN** the response `Content-Type` is `text/markdown` and the body is the
   rendered bootstrap text verbatim
 
 #### Scenario: JSON negotiation
-- **WHEN** `GET /v1/context?agent=default&user=alice` is sent with
+- **WHEN** `GET /v1/context?agent=jarvis&user=tony` is sent with
   `Accept: application/json`
 - **THEN** the response `Content-Type` is `application/json` and the body is an
   object with a `rendered` string field and a `missing` array of the absent
@@ -93,7 +93,7 @@ regardless.
 
 #### Scenario: Missing bearer is rejected when configured
 - **WHEN** the server is started with `AGENTMEM_HTTP_BEARER=secret` and
-  `GET /v1/context?agent=default&user=alice` is sent without an `Authorization`
+  `GET /v1/context?agent=jarvis&user=tony` is sent without an `Authorization`
   header
 - **THEN** the server responds `401 Unauthorized` and does not render any context
 
@@ -103,7 +103,7 @@ regardless.
 - **THEN** the server responds `200 OK` with the rendered context
 
 #### Scenario: Unauthenticated when bearer unset
-- **WHEN** `AGENTMEM_HTTP_BEARER` is unset and `GET /v1/context?agent=default&user=alice`
+- **WHEN** `AGENTMEM_HTTP_BEARER` is unset and `GET /v1/context?agent=jarvis&user=tony`
   is sent without an `Authorization` header
 - **THEN** the server responds `200 OK` with the rendered context
 

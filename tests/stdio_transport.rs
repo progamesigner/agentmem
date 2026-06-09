@@ -42,7 +42,7 @@ async fn stdio_initialize_list_and_roundtrip() {
         .call_tool(
             CallToolRequestParams::new("write_memory_note").with_arguments(
                 json!({
-                    "agent": "coder", "user": "alice",
+                    "agent": "jarvis", "user": "tony",
                     "path": "Agents/topics/note.md", "content": "hello stdio"
                 })
                 .as_object()
@@ -57,7 +57,7 @@ async fn stdio_initialize_list_and_roundtrip() {
         .call_tool(
             CallToolRequestParams::new("read_memory_note").with_arguments(
                 json!({
-                    "agent": "coder", "user": "alice",
+                    "agent": "jarvis", "user": "tony",
                     "path": "Agents/topics/note.md"
                 })
                 .as_object()

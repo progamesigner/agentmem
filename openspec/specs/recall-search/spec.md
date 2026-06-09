@@ -46,10 +46,10 @@ return a hit, path, or snippet belonging to another scope — isolation is struc
 not a query-time filter.
 
 #### Scenario: Other scopes' notes are unreachable
-- **WHEN** the tool is invoked for scope `{agent:"coder", user:"alice"}` and the vault
-  also contains matching notes for `coder.bob`
-- **THEN** no `coder.bob` hit, path, or snippet appears in the response, because the
-  query never opens `coder.bob`'s index
+- **WHEN** the tool is invoked for scope `{agent:"jarvis", user:"tony"}` and the vault
+  also contains matching notes for `jarvis.sam`
+- **THEN** no `jarvis.sam` hit, path, or snippet appears in the response, because the
+  query never opens `jarvis.sam`'s index
 
 #### Scenario: scoped policy omits the shared index
 - **WHEN** the tool is invoked under policy `scoped`

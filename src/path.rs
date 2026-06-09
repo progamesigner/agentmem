@@ -341,8 +341,8 @@ fn apply_scope_to_relative(relative: &Utf8Path, suffix: &str) -> Option<Utf8Path
 }
 
 /// Insert `.<suffix>` between a filename's stem and its extension:
-/// `plan.md` + `coder.alice` → `plan.coder.alice.md`; `NOTES` +
-/// `coder` → `NOTES.coder` (extensionless names get the suffix appended).
+/// `plan.md` + `jarvis.tony` → `plan.jarvis.tony.md`; `NOTES` +
+/// `jarvis` → `NOTES.jarvis` (extensionless names get the suffix appended).
 fn apply_suffix_to_filename(filename: &str, suffix: &str) -> String {
     let path = Utf8Path::new(filename);
     match (path.file_stem(), path.extension()) {
@@ -358,7 +358,7 @@ fn apply_suffix_to_filename(filename: &str, suffix: &str) -> String {
 ///
 /// Link targets only ever carry a `.md` extension or none, so — unlike
 /// [`apply_suffix_to_filename`] — this does not consult `Utf8Path::extension`,
-/// which would mistake the dotted suffix itself (`.coder.alice`) for an extension.
+/// which would mistake the dotted suffix itself (`.jarvis.tony`) for an extension.
 pub fn apply_suffix_to_link_target(target: &str, suffix: &str) -> String {
     match target.strip_suffix(".md") {
         Some(stem) => format!("{stem}.{suffix}.md"),
@@ -449,11 +449,11 @@ mod tests {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
         let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
-        let physical = r.resolve("coder.alice", &vp).unwrap();
+        let physical = r.resolve("jarvis.tony", &vp).unwrap();
         assert!(
             physical
                 .as_path()
-                .ends_with("Agents/coder.alice/tasks/plan.coder.alice.md")
+                .ends_with("Agents/jarvis.tony/tasks/plan.jarvis.tony.md")
         );
     }
 
@@ -462,11 +462,11 @@ mod tests {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<agent>");
         let vp = VirtualPath::new("Agents/TASK-STATE.md").unwrap();
-        let physical = r.resolve("coder", &vp).unwrap();
+        let physical = r.resolve("jarvis", &vp).unwrap();
         assert!(
             physical
                 .as_path()
-                .ends_with("Agents/coder/TASK-STATE.coder.md")
+                .ends_with("Agents/jarvis/TASK-STATE.jarvis.md")
         );
     }
 
@@ -509,10 +509,10 @@ mod tests {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<team>.<agent>.<env>.<user>");
         let vp = VirtualPath::new("Agents/tasks/plan.md").unwrap();
-        let physical = r.resolve("platform.coder.prod.alice", &vp).unwrap();
+        let physical = r.resolve("platform.jarvis.prod.tony", &vp).unwrap();
         assert!(
             physical.as_path().ends_with(
-                "Agents/platform.coder.prod.alice/tasks/plan.platform.coder.prod.alice.md"
+                "Agents/platform.jarvis.prod.tony/tasks/plan.platform.jarvis.prod.tony.md"
             )
         );
     }
@@ -532,11 +532,11 @@ mod tests {
         let r = resolver(tmp.path(), "", "<agent>.<user>");
         let vp = VirtualPath::new("tasks/plan.md").unwrap();
         assert_eq!(r.detect_region(&vp), Region::InsideAgentsFolder);
-        let physical = r.resolve("coder.alice", &vp).unwrap();
+        let physical = r.resolve("jarvis.tony", &vp).unwrap();
         assert!(
             physical
                 .as_path()
-                .ends_with("coder.alice/tasks/plan.coder.alice.md")
+                .ends_with("jarvis.tony/tasks/plan.jarvis.tony.md")
         );
     }
 
@@ -581,13 +581,13 @@ mod tests {
     fn crafted_path_cannot_reach_other_scope() {
         let tmp = assert_fs::TempDir::new().unwrap();
         let r = resolver(tmp.path(), "Agents", "<agent>.<user>");
-        let vp = VirtualPath::new("Agents/tasks/plan.coder.bob.md").unwrap();
-        let physical = r.resolve("coder.alice", &vp).unwrap();
+        let vp = VirtualPath::new("Agents/tasks/plan.jarvis.sam.md").unwrap();
+        let physical = r.resolve("jarvis.tony", &vp).unwrap();
         let s = physical.as_path().to_string_lossy();
         // Always under the caller's own scope directory + suffix.
-        assert!(s.contains("Agents/coder.alice/"));
-        assert!(s.ends_with(".coder.alice.md"));
-        assert!(!s.contains("coder.bob/"));
+        assert!(s.contains("Agents/jarvis.tony/"));
+        assert!(s.ends_with(".jarvis.tony.md"));
+        assert!(!s.contains("jarvis.sam/"));
     }
 
     #[test]
@@ -598,8 +598,8 @@ mod tests {
             .path()
             .canonicalize()
             .unwrap()
-            .join("Agents/coder.alice/tasks/plan.coder.alice.md");
-        let clean = r.strip_suffix(&physical, "coder.alice").unwrap();
+            .join("Agents/jarvis.tony/tasks/plan.jarvis.tony.md");
+        let clean = r.strip_suffix(&physical, "jarvis.tony").unwrap();
         assert_eq!(clean.as_str(), "Agents/tasks/plan.md");
     }
 
@@ -611,28 +611,28 @@ mod tests {
             .path()
             .canonicalize()
             .unwrap()
-            .join("Agents/coder.bob/tasks/plan.coder.bob.md");
-        assert_eq!(r.strip_suffix(&physical, "coder.alice"), None);
+            .join("Agents/jarvis.sam/tasks/plan.jarvis.sam.md");
+        assert_eq!(r.strip_suffix(&physical, "jarvis.tony"), None);
     }
 
     #[test]
     fn link_target_suffix_round_trips_for_wikilinks() {
         // Bare basename (no extension): suffix appended verbatim.
         assert_eq!(
-            apply_suffix_to_link_target("rust", "coder.alice"),
-            "rust.coder.alice"
+            apply_suffix_to_link_target("rust", "jarvis.tony"),
+            "rust.jarvis.tony"
         );
         assert_eq!(
-            strip_suffix_from_link_target("rust.coder.alice", "coder.alice").as_deref(),
+            strip_suffix_from_link_target("rust.jarvis.tony", "jarvis.tony").as_deref(),
             Some("rust")
         );
         // Path-qualified target: only the final segment is suffixed.
         assert_eq!(
-            apply_suffix_to_link_target("topics/rust", "coder.alice"),
-            "topics/rust.coder.alice"
+            apply_suffix_to_link_target("topics/rust", "jarvis.tony"),
+            "topics/rust.jarvis.tony"
         );
         assert_eq!(
-            strip_suffix_from_link_target("topics/rust.coder.alice", "coder.alice").as_deref(),
+            strip_suffix_from_link_target("topics/rust.jarvis.tony", "jarvis.tony").as_deref(),
             Some("topics/rust")
         );
     }
@@ -641,11 +641,11 @@ mod tests {
     fn link_target_suffix_round_trips_for_markdown() {
         // A `.md` extension: suffix is inserted before the extension.
         assert_eq!(
-            apply_suffix_to_link_target("topics/rust.md", "coder.alice"),
-            "topics/rust.coder.alice.md"
+            apply_suffix_to_link_target("topics/rust.md", "jarvis.tony"),
+            "topics/rust.jarvis.tony.md"
         );
         assert_eq!(
-            strip_suffix_from_link_target("topics/rust.coder.alice.md", "coder.alice").as_deref(),
+            strip_suffix_from_link_target("topics/rust.jarvis.tony.md", "jarvis.tony").as_deref(),
             Some("topics/rust.md")
         );
     }
@@ -653,25 +653,25 @@ mod tests {
     #[test]
     fn link_target_strip_requires_exact_suffix() {
         // A target not carrying the suffix is left unrecovered (None).
-        assert_eq!(strip_suffix_from_link_target("rust", "coder.alice"), None);
+        assert_eq!(strip_suffix_from_link_target("rust", "jarvis.tony"), None);
         assert_eq!(
-            strip_suffix_from_link_target("rust.coder.bob", "coder.alice"),
+            strip_suffix_from_link_target("rust.jarvis.sam", "jarvis.tony"),
             None
         );
     }
 
     #[test]
     fn link_target_collision_case_is_exact_match() {
-        // A note literally named `x.coder.alice` collides with the suffix shape:
+        // A note literally named `x.jarvis.tony` collides with the suffix shape:
         // the exact-match strip recovers `x`, mirroring the filename transform.
         // Applying then stripping round-trips through the doubled suffix.
         assert_eq!(
-            apply_suffix_to_link_target("x.coder.alice", "coder.alice"),
-            "x.coder.alice.coder.alice"
+            apply_suffix_to_link_target("x.jarvis.tony", "jarvis.tony"),
+            "x.jarvis.tony.jarvis.tony"
         );
         assert_eq!(
-            strip_suffix_from_link_target("x.coder.alice.coder.alice", "coder.alice").as_deref(),
-            Some("x.coder.alice")
+            strip_suffix_from_link_target("x.jarvis.tony.jarvis.tony", "jarvis.tony").as_deref(),
+            Some("x.jarvis.tony")
         );
     }
 }

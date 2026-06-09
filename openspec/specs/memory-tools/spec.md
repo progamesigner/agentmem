@@ -15,8 +15,8 @@ The system SHALL expose a `list_memory_notes` tool that returns a paginated set 
 - **THEN** only entries whose virtual path begins with `topics` (under the agents folder) are returned
 
 #### Scenario: Other scopes' files are hidden
-- **WHEN** the tool is invoked with scope `{agent:"coder", user:"alice"}` and the vault also contains files for `coder.bob`
-- **THEN** the `coder.bob` files do NOT appear in the response
+- **WHEN** the tool is invoked with scope `{agent:"jarvis", user:"tony"}` and the vault also contains files for `jarvis.sam`
+- **THEN** the `jarvis.sam` files do NOT appear in the response
 
 #### Scenario: scoped policy hides everything outside agents folder
 - **WHEN** the tool is invoked under policy `scoped`
@@ -211,7 +211,7 @@ The system SHALL expose an `update_task_heartbeat` tool whose target is hardcode
 The system SHALL expose an `append_diary_entry` tool that appends a timestamped section to today's diary file at the virtual path `diary/<YYYY-MM-DD>.md` (resolved relative to the agents folder) for the active scope. The tool SHALL create the diary file (and its parent directories) if it does not exist, writing a `# <YYYY-MM-DD>` H1 title as the first line of a newly created file. The tool SHALL accept an optional `title` argument: when present, the entry heading is `## <HH:MM:SS> — <title>`; when absent, it is `## <HH:MM:SS>`. The append SHALL be implemented as a read-modify-write through the atomic-write procedure.
 
 #### Scenario: Appends to existing diary
-- **WHEN** the tool is called for scope `{agent:"coder", user:"alice"}` with `content="Picked up task #42."` and `title="Task pickup"` at local time `14:03:22` on `2026-05-25`, and the scope's diary file for that date already contains prior sections
+- **WHEN** the tool is called for scope `{agent:"jarvis", user:"tony"}` with `content="Picked up task #42."` and `title="Task pickup"` at local time `14:03:22` on `2026-05-25`, and the scope's diary file for that date already contains prior sections
 - **THEN** the server resolves the path to the scope's physical diary file, reads its current contents, appends `\n## 14:03:22 — Task pickup\nPicked up task #42.\n`, and persists the result via the atomic-write procedure
 
 #### Scenario: Appends without a title
@@ -273,8 +273,8 @@ The system SHALL provide a single shared renderer that produces the session-cont
 - **THEN** its content is generated from the server's live tool catalogue so that the names and usage it describes always match the tools currently advertised
 
 #### Scenario: Tools guide names the concrete active scope
-- **WHEN** `{{tools_guide}}` is rendered for a non-empty scope such as `{agent: coder, user: alice}`
-- **THEN** the guide states that every call must carry those scope keys and lists them as `key=value` pairs in deterministic key order (for example `agent=coder, user=alice`), covering exactly the keys the configured scheme defines
+- **WHEN** `{{tools_guide}}` is rendered for a non-empty scope such as `{agent: jarvis, user: tony}`
+- **THEN** the guide states that every call must carry those scope keys and lists them as `key=value` pairs in deterministic key order (for example `agent=jarvis, user=tony`), covering exactly the keys the configured scheme defines
 
 #### Scenario: Tools guide falls back to generic phrasing for an empty scope
 - **WHEN** `{{tools_guide}}` is rendered for an empty scope
@@ -345,13 +345,13 @@ rules and SHALL be transparent to a caller that uses only clean shortest names.
 
 #### Scenario: Read strips the suffix from link targets
 - **WHEN** `read_memory_note` returns an own-scope note whose persisted content
-  contains `[[rust.coder.alice]]` for scope `{agent:"coder", user:"alice"}`
+  contains `[[rust.jarvis.tony]]` for scope `{agent:"jarvis", user:"tony"}`
 - **THEN** the returned `content` contains `[[rust]]`
 
 #### Scenario: Write expands own-scope link targets
-- **WHEN** `write_memory_note` is called for scope rendering to `coder.alice` with
+- **WHEN** `write_memory_note` is called for scope rendering to `jarvis.tony` with
   content containing `[[rust]]` resolving to the caller's own `rust.md`
-- **THEN** the persisted file content contains `[[rust.coder.alice]]`
+- **THEN** the persisted file content contains `[[rust.jarvis.tony]]`
 
 #### Scenario: Diary append expands link targets
 - **WHEN** `append_diary_entry` is called with content containing `[[rust]]`
@@ -366,8 +366,8 @@ physical file, so that a search containing a clean link target matches the
 suffixed form stored on disk.
 
 #### Scenario: Edit search containing a link matches on disk
-- **WHEN** the persisted note contains `[[rust.coder.alice]]` and
-  `edit_memory_note` is called for scope `coder.alice` with `search_string`
+- **WHEN** the persisted note contains `[[rust.jarvis.tony]]` and
+  `edit_memory_note` is called for scope `jarvis.tony` with `search_string`
   containing `[[rust]]`
 - **THEN** the search matches the stored line and the edit is applied (it does NOT
   fail with `edit_search_not_found`)
@@ -375,7 +375,7 @@ suffixed form stored on disk.
 #### Scenario: Edit replacement is expanded
 - **WHEN** `edit_memory_note` replaces a line with a `replace_string` containing
   `[[guide]]` resolving to the caller's own `guide.md`
-- **THEN** the persisted content contains `[[guide.coder.alice]]`
+- **THEN** the persisted content contains `[[guide.jarvis.tony]]`
 
 ### Requirement: Core-file tools apply the link transform
 
@@ -388,8 +388,8 @@ files it renders. Line caps SHALL be evaluated against the agent-facing content
 
 #### Scenario: MEMORY.md index expands and renders clean
 - **WHEN** `evolve_core_persona` writes `memory` content containing `[[rust]]`
-  resolving to the caller's own note, for scope rendering to `coder.alice`
-- **THEN** the persisted `MEMORY.md` contains `[[rust.coder.alice]]`, and a
+  resolving to the caller's own note, for scope rendering to `jarvis.tony`
+- **THEN** the persisted `MEMORY.md` contains `[[rust.jarvis.tony]]`, and a
   subsequent `load_session_context` renders the memory section with `[[rust]]`
 
 #### Scenario: Heartbeat link expands on write

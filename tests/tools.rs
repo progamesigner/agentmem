@@ -108,7 +108,7 @@ fn list_includes_own_scope_and_outside_under_namespaced() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/notes.md","content":"x"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/notes.md","content":"x"}),
     )
     .unwrap();
     write_outside(&tmp, "Actions/release.md", "shared");
@@ -116,7 +116,7 @@ fn list_includes_own_scope_and_outside_under_namespaced() {
     let body = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     let items: Vec<&str> = body["items"]
         .as_array()
@@ -135,20 +135,20 @@ fn list_path_prefix_filters_inside_agents_folder() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/rust.md","content":"x"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
     )
     .unwrap();
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/other/go.md","content":"x"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/other/go.md","content":"x"}),
     )
     .unwrap();
 
     let body = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice","path_prefix":"topics"}),
+        json!({"agent":"jarvis","user":"tony","path_prefix":"topics"}),
     ));
     let items: Vec<&str> = body["items"]
         .as_array()
@@ -166,20 +166,20 @@ fn list_hides_other_scopes() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/notes.md","content":"a"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/notes.md","content":"a"}),
     )
     .unwrap();
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"bob","path":"Agents/topics/notes.md","content":"b"}),
+        json!({"agent":"jarvis","user":"sam","path":"Agents/topics/notes.md","content":"b"}),
     )
     .unwrap();
 
     let body = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     let items: Vec<&str> = body["items"]
         .as_array()
@@ -197,7 +197,7 @@ fn list_scoped_policy_hides_outside() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/notes.md","content":"x"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/notes.md","content":"x"}),
     )
     .unwrap();
     write_outside(&tmp, "Actions/release.md", "shared");
@@ -205,7 +205,7 @@ fn list_scoped_policy_hides_outside() {
     let body = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     let items: Vec<&str> = body["items"]
         .as_array()
@@ -224,14 +224,14 @@ fn list_paginates_with_limit_and_cursor() {
         call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","user":"alice","path":format!("Agents/topics/n{i}.md"),"content":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":format!("Agents/topics/n{i}.md"),"content":"x"}),
         )
         .unwrap();
     }
     let page1 = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice","limit":2}),
+        json!({"agent":"jarvis","user":"tony","limit":2}),
     ));
     assert_eq!(page1["items"].as_array().unwrap().len(), 2);
     let cursor = page1["next_cursor"]
@@ -242,7 +242,7 @@ fn list_paginates_with_limit_and_cursor() {
     let page2 = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice","limit":2,"cursor":cursor}),
+        json!({"agent":"jarvis","user":"tony","limit":2,"cursor":cursor}),
     ));
     assert_eq!(page2["items"].as_array().unwrap().len(), 2);
 
@@ -250,7 +250,7 @@ fn list_paginates_with_limit_and_cursor() {
     let page3 = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice","limit":2,"cursor":cursor2}),
+        json!({"agent":"jarvis","user":"tony","limit":2,"cursor":cursor2}),
     ));
     assert_eq!(page3["items"].as_array().unwrap().len(), 1);
     assert!(page3["next_cursor"].is_null());
@@ -264,7 +264,7 @@ fn list_limit_over_max_is_rejected() {
         call(
             &tb,
             "list_memory_notes",
-            json!({"agent":"coder","user":"alice","limit":1001}),
+            json!({"agent":"jarvis","user":"tony","limit":1001}),
         ),
         "invalid_argument",
     );
@@ -275,17 +275,17 @@ fn list_ordering_is_stable() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);
     for name in ["c", "a", "b"] {
-        call(&tb, "write_memory_note", json!({"agent":"coder","user":"alice","path":format!("Agents/topics/{name}.md"),"content":"x"})).unwrap();
+        call(&tb, "write_memory_note", json!({"agent":"jarvis","user":"tony","path":format!("Agents/topics/{name}.md"),"content":"x"})).unwrap();
     }
     let a = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     let b = structured(call(
         &tb,
         "list_memory_notes",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     assert_eq!(a["items"], b["items"]);
 }
@@ -299,13 +299,13 @@ fn read_own_scope_inside() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/note.md","content":"hi"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md","content":"hi"}),
     )
     .unwrap();
     let body = structured(call(
         &tb,
         "read_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/note.md"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md"}),
     ));
     assert_eq!(body["content"], "hi");
 }
@@ -318,7 +318,7 @@ fn read_outside_under_namespaced() {
     let body = structured(call(
         &tb,
         "read_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Actions/release.md"}),
+        json!({"agent":"jarvis","user":"tony","path":"Actions/release.md"}),
     ));
     assert_eq!(body["content"], "notes");
 }
@@ -332,7 +332,7 @@ fn read_outside_under_scoped_is_denied() {
         call(
             &tb,
             "read_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Actions/release.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md"}),
         ),
         "path_not_permitted",
     );
@@ -346,7 +346,7 @@ fn read_missing_is_not_found() {
         call(
             &tb,
             "read_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/nope.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/nope.md"}),
         ),
         "not_found",
     );
@@ -359,7 +359,7 @@ fn read_hidden_is_path_not_permitted() {
     let res = call(
         &tb,
         "read_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/.secret.md"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/.secret.md"}),
     );
     assert_code(res, "path_not_permitted");
 }
@@ -373,7 +373,7 @@ fn write_inside_succeeds_with_byte_count() {
     let body = structured(call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","content":"hello"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"hello"}),
     ));
     assert_eq!(body["bytes_written"], 5);
 }
@@ -387,7 +387,7 @@ fn write_outside_under_namespaced_is_denied_and_unchanged() {
         call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Actions/release.md","content":"new"}),
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md","content":"new"}),
         ),
         "write_denied",
     );
@@ -404,7 +404,7 @@ fn write_outside_under_readwrite_succeeds_without_suffix() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Scratch/team-notes.md","content":"shared"}),
+        json!({"agent":"jarvis","user":"tony","path":"Scratch/team-notes.md","content":"shared"}),
     )
     .unwrap();
     assert_eq!(
@@ -421,7 +421,7 @@ fn write_under_readonly_is_denied() {
         call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","content":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"x"}),
         ),
         "write_denied",
     );
@@ -435,13 +435,13 @@ fn write_hidden_target_is_path_not_permitted_and_creates_nothing() {
         call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/.hidden.md","content":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/.hidden.md","content":"x"}),
         ),
         "path_not_permitted",
     );
     assert!(
         !tmp.path()
-            .join("Agents/coder.alice/topics/.hidden.coder.alice.md")
+            .join("Agents/jarvis.tony/topics/.hidden.jarvis.tony.md")
             .exists()
     );
 }
@@ -455,19 +455,19 @@ fn edit_unique_succeeds() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","content":"alpha beta gamma"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"alpha beta gamma"}),
     )
     .unwrap();
     let body = structured(call(
         &tb,
         "edit_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","search_string":"beta","replace_string":"BETA"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","search_string":"beta","replace_string":"BETA"}),
     ));
     assert_eq!(body["chars_replaced"], 4);
     let read = structured(call(
         &tb,
         "read_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
     ));
     assert_eq!(read["content"], "alpha BETA gamma");
 }
@@ -481,7 +481,7 @@ fn edit_read_only_region_is_denied() {
         call(
             &tb,
             "edit_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Actions/release.md","search_string":"beta","replace_string":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md","search_string":"beta","replace_string":"x"}),
         ),
         "write_denied",
     );
@@ -494,14 +494,14 @@ fn edit_missing_search_is_not_found() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","content":"alpha"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"alpha"}),
     )
     .unwrap();
     assert_code(
         call(
             &tb,
             "edit_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","search_string":"zeta","replace_string":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","search_string":"zeta","replace_string":"x"}),
         ),
         "edit_search_not_found",
     );
@@ -514,14 +514,14 @@ fn edit_ambiguous_search_is_rejected() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","content":"dup dup"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"dup dup"}),
     )
     .unwrap();
     assert_code(
         call(
             &tb,
             "edit_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","search_string":"dup","replace_string":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","search_string":"dup","replace_string":"x"}),
         ),
         "edit_search_ambiguous",
     );
@@ -536,13 +536,13 @@ fn delete_own_scope_succeeds() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md","content":"x"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"x"}),
     )
     .unwrap();
     let body = structured(call(
         &tb,
         "delete_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
     ));
     assert_eq!(body["deleted"], true);
 }
@@ -555,7 +555,7 @@ fn delete_under_readonly_is_denied() {
         call(
             &tb,
             "delete_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
         ),
         "write_denied",
     );
@@ -570,7 +570,7 @@ fn delete_outside_under_namespaced_is_denied() {
         call(
             &tb,
             "delete_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Actions/release.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md"}),
         ),
         "write_denied",
     );
@@ -585,7 +585,7 @@ fn delete_outside_under_scoped_is_path_not_permitted() {
         call(
             &tb,
             "delete_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Actions/release.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md"}),
         ),
         "path_not_permitted",
     );
@@ -599,7 +599,7 @@ fn delete_missing_is_not_found() {
         call(
             &tb,
             "delete_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/nope.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/nope.md"}),
         ),
         "not_found",
     );
@@ -609,24 +609,24 @@ fn delete_missing_is_not_found() {
 fn delete_other_scope_is_unreachable() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);
-    // bob owns the file; alice's delete of the same logical name must miss it.
+    // sam owns the file; tony's delete of the same logical name must miss it.
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"bob","path":"Agents/topics/n.md","content":"bob"}),
+        json!({"agent":"jarvis","user":"sam","path":"Agents/topics/n.md","content":"sam"}),
     )
     .unwrap();
     assert_code(
         call(
             &tb,
             "delete_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
         ),
         "not_found",
     );
     assert!(
         tmp.path()
-            .join("Agents/coder.bob/topics/n.coder.bob.md")
+            .join("Agents/jarvis.sam/topics/n.jarvis.sam.md")
             .exists()
     );
 }
@@ -641,7 +641,7 @@ fn write_root_core_file_is_rejected_naming_wrapper() {
         let res = call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","user":"alice","path":format!("Agents/{f}"),"content":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":format!("Agents/{f}"),"content":"x"}),
         );
         match res {
             Err(e) => {
@@ -657,8 +657,8 @@ fn write_root_core_file_is_rejected_naming_wrapper() {
         assert!(
             !tmp.path()
                 .join(format!(
-                    "Agents/coder.alice/{}",
-                    f.replace(".md", ".coder.alice.md")
+                    "Agents/jarvis.tony/{}",
+                    f.replace(".md", ".jarvis.tony.md")
                 ))
                 .exists()
         );
@@ -672,7 +672,7 @@ fn write_root_heartbeat_names_heartbeat_wrapper() {
     let res = call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/HEARTBEAT.md","content":"x"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/HEARTBEAT.md","content":"x"}),
     );
     match res {
         Err(e) => {
@@ -691,19 +691,19 @@ fn edit_root_core_file_is_rejected_and_unchanged() {
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"memory","content":"alpha beta"}),
+        json!({"agent":"jarvis","user":"tony","which":"memory","content":"alpha beta"}),
     )
     .unwrap();
     assert_code(
         call(
             &tb,
             "edit_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/MEMORY.md","search_string":"beta","replace_string":"BETA"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/MEMORY.md","search_string":"beta","replace_string":"BETA"}),
         ),
         "path_not_permitted",
     );
     assert_eq!(
-        std::fs::read_to_string(tmp.path().join("Agents/coder.alice/MEMORY.coder.alice.md"))
+        std::fs::read_to_string(tmp.path().join("Agents/jarvis.tony/MEMORY.jarvis.tony.md"))
             .unwrap(),
         "alpha beta"
     );
@@ -716,20 +716,20 @@ fn delete_root_core_file_is_rejected_and_unchanged() {
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"persona","content":"soul"}),
+        json!({"agent":"jarvis","user":"tony","which":"persona","content":"soul"}),
     )
     .unwrap();
     assert_code(
         call(
             &tb,
             "delete_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/PERSONA.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/PERSONA.md"}),
         ),
         "path_not_permitted",
     );
     assert!(
         tmp.path()
-            .join("Agents/coder.alice/PERSONA.coder.alice.md")
+            .join("Agents/jarvis.tony/PERSONA.jarvis.tony.md")
             .exists()
     );
 }
@@ -742,21 +742,21 @@ fn subfolder_write_edit_delete_inside_agents_are_allowed() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/auth/jwt.md","content":"alpha beta"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/auth/jwt.md","content":"alpha beta"}),
     )
     .unwrap();
     // Edit succeeds.
     call(
         &tb,
         "edit_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/auth/jwt.md","search_string":"beta","replace_string":"BETA"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/auth/jwt.md","search_string":"beta","replace_string":"BETA"}),
     )
     .unwrap();
     // Delete succeeds.
     let body = structured(call(
         &tb,
         "delete_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/auth/jwt.md"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/auth/jwt.md"}),
     ));
     assert_eq!(body["deleted"], true);
 }
@@ -772,7 +772,7 @@ fn outside_region_policy_behavior_is_unaffected_by_root_rule() {
         call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Actions/release.md","content":"new"}),
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md","content":"new"}),
         ),
         "write_denied",
     );
@@ -788,14 +788,14 @@ fn load_session_context_all_present() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":which,"content":format!("BODY-{which}")}),
+            json!({"agent":"jarvis","user":"tony","which":which,"content":format!("BODY-{which}")}),
         )
         .unwrap();
     }
     let body = structured(call(
         &tb,
         "load_session_context",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     let rendered = body["rendered"].as_str().unwrap();
     // Each foundational file's contents are woven into the rendered output.
@@ -811,19 +811,19 @@ fn load_session_context_some_missing() {
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"persona","content":"p"}),
+        json!({"agent":"jarvis","user":"tony","which":"persona","content":"p"}),
     )
     .unwrap();
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"rules","content":"r"}),
+        json!({"agent":"jarvis","user":"tony","which":"rules","content":"r"}),
     )
     .unwrap();
     let body = structured(call(
         &tb,
         "load_session_context",
-        json!({"agent":"coder","user":"alice"}),
+        json!({"agent":"jarvis","user":"tony"}),
     ));
     let rendered = body["rendered"].as_str().unwrap();
     // Present file is substituted; absent ones show the missing sentinel.
@@ -850,7 +850,7 @@ fn load_session_context_rejects_extra_args() {
         call(
             &tb,
             "load_session_context",
-            json!({"agent":"coder","user":"alice","path":"x"}),
+            json!({"agent":"jarvis","user":"tony","path":"x"}),
         ),
         "invalid_argument",
     );
@@ -858,7 +858,7 @@ fn load_session_context_rejects_extra_args() {
         call(
             &tb,
             "load_session_context",
-            json!({"agent":"coder","user":"alice","which":"persona"}),
+            json!({"agent":"jarvis","user":"tony","which":"persona"}),
         ),
         "invalid_argument",
     );
@@ -880,12 +880,12 @@ fn evolve_writes_each_foundational_file() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":which,"content":which}),
+            json!({"agent":"jarvis","user":"tony","which":which,"content":which}),
         )
         .unwrap();
         let physical = tmp.path().join(format!(
-            "Agents/coder.alice/{}",
-            file.replace(".md", ".coder.alice.md")
+            "Agents/jarvis.tony/{}",
+            file.replace(".md", ".jarvis.tony.md")
         ));
         assert_eq!(std::fs::read_to_string(physical).unwrap(), which);
     }
@@ -899,7 +899,7 @@ fn evolve_invalid_which_is_rejected() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":"bogus","content":"x"}),
+            json!({"agent":"jarvis","user":"tony","which":"bogus","content":"x"}),
         ),
         "invalid_argument",
     );
@@ -913,7 +913,7 @@ fn evolve_rejects_path_arg() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":"persona","content":"x","path":"y"}),
+            json!({"agent":"jarvis","user":"tony","which":"persona","content":"x","path":"y"}),
         ),
         "invalid_argument",
     );
@@ -927,7 +927,7 @@ fn evolve_under_readonly_is_denied() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":"persona","content":"x"}),
+            json!({"agent":"jarvis","user":"tony","which":"persona","content":"x"}),
         ),
         "write_denied",
     );
@@ -941,7 +941,7 @@ fn evolve_user_within_cap_succeeds() {
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"user","content":content}),
+        json!({"agent":"jarvis","user":"tony","which":"user","content":content}),
     )
     .unwrap();
 }
@@ -955,13 +955,13 @@ fn evolve_user_over_cap_is_rejected_and_unchanged() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":"user","content":content}),
+            json!({"agent":"jarvis","user":"tony","which":"user","content":content}),
         ),
         "invalid_argument",
     );
     assert!(
         !tmp.path()
-            .join("Agents/coder.alice/USER.coder.alice.md")
+            .join("Agents/jarvis.tony/USER.jarvis.tony.md")
             .exists()
     );
 }
@@ -974,7 +974,7 @@ fn evolve_memory_within_cap_succeeds() {
     call(
         &tb,
         "evolve_core_persona",
-        json!({"agent":"coder","user":"alice","which":"memory","content":content}),
+        json!({"agent":"jarvis","user":"tony","which":"memory","content":content}),
     )
     .unwrap();
 }
@@ -988,13 +988,13 @@ fn evolve_memory_over_cap_is_rejected_and_unchanged() {
         call(
             &tb,
             "evolve_core_persona",
-            json!({"agent":"coder","user":"alice","which":"memory","content":content}),
+            json!({"agent":"jarvis","user":"tony","which":"memory","content":content}),
         ),
         "invalid_argument",
     );
     assert!(
         !tmp.path()
-            .join("Agents/coder.alice/MEMORY.coder.alice.md")
+            .join("Agents/jarvis.tony/MEMORY.jarvis.tony.md")
             .exists()
     );
 }
@@ -1008,13 +1008,13 @@ fn heartbeat_writes_state_file() {
     call(
         &tb,
         "update_task_heartbeat",
-        json!({"agent":"coder","user":"alice","content":"working"}),
+        json!({"agent":"jarvis","user":"tony","content":"working"}),
     )
     .unwrap();
     assert_eq!(
         std::fs::read_to_string(
             tmp.path()
-                .join("Agents/coder.alice/HEARTBEAT.coder.alice.md")
+                .join("Agents/jarvis.tony/HEARTBEAT.jarvis.tony.md")
         )
         .unwrap(),
         "working"
@@ -1030,17 +1030,17 @@ fn diary_creates_then_appends() {
     call(
         &tb,
         "append_diary_entry",
-        json!({"agent":"coder","user":"alice","content":"first"}),
+        json!({"agent":"jarvis","user":"tony","content":"first"}),
     )
     .unwrap();
     call(
         &tb,
         "append_diary_entry",
-        json!({"agent":"coder","user":"alice","content":"second"}),
+        json!({"agent":"jarvis","user":"tony","content":"second"}),
     )
     .unwrap();
     // Find the single diary file under the scope dir.
-    let diary_dir = tmp.path().join("Agents/coder.alice/diary");
+    let diary_dir = tmp.path().join("Agents/jarvis.tony/diary");
     let file = std::fs::read_dir(&diary_dir)
         .unwrap()
         .next()
@@ -1065,10 +1065,10 @@ fn diary_entry_with_title_uses_em_dash_heading() {
     call(
         &tb,
         "append_diary_entry",
-        json!({"agent":"coder","user":"alice","content":"body","title":"Task pickup"}),
+        json!({"agent":"jarvis","user":"tony","content":"body","title":"Task pickup"}),
     )
     .unwrap();
-    let diary_dir = tmp.path().join("Agents/coder.alice/diary");
+    let diary_dir = tmp.path().join("Agents/jarvis.tony/diary");
     let file = std::fs::read_dir(&diary_dir)
         .unwrap()
         .next()
@@ -1086,10 +1086,10 @@ fn diary_entry_without_title_uses_bare_time_heading() {
     call(
         &tb,
         "append_diary_entry",
-        json!({"agent":"coder","user":"alice","content":"body"}),
+        json!({"agent":"jarvis","user":"tony","content":"body"}),
     )
     .unwrap();
-    let diary_dir = tmp.path().join("Agents/coder.alice/diary");
+    let diary_dir = tmp.path().join("Agents/jarvis.tony/diary");
     let file = std::fs::read_dir(&diary_dir)
         .unwrap()
         .next()
@@ -1112,13 +1112,13 @@ fn diary_concurrent_appends_are_serialised() {
                 call(
                     tb,
                     "append_diary_entry",
-                    json!({"agent":"coder","user":"alice","content":format!("entry-{n}")}),
+                    json!({"agent":"jarvis","user":"tony","content":format!("entry-{n}")}),
                 )
                 .unwrap();
             });
         }
     });
-    let diary_dir = tmp.path().join("Agents/coder.alice/diary");
+    let diary_dir = tmp.path().join("Agents/jarvis.tony/diary");
     let file = std::fs::read_dir(&diary_dir)
         .unwrap()
         .next()
@@ -1143,7 +1143,7 @@ fn diary_rejects_path_arg() {
         call(
             &tb,
             "append_diary_entry",
-            json!({"agent":"coder","user":"alice","content":"x","path":"y"}),
+            json!({"agent":"jarvis","user":"tony","content":"x","path":"y"}),
         ),
         "invalid_argument",
     );
@@ -1157,7 +1157,7 @@ fn diary_empty_content_is_rejected() {
         call(
             &tb,
             "append_diary_entry",
-            json!({"agent":"coder","user":"alice","content":""}),
+            json!({"agent":"jarvis","user":"tony","content":""}),
         ),
         "invalid_argument",
     );
@@ -1172,7 +1172,7 @@ fn missing_scope_key_is_reported_by_name() {
     match call(
         &tb,
         "read_memory_note",
-        json!({"agent":"coder","path":"Agents/topics/n.md"}),
+        json!({"agent":"jarvis","path":"Agents/topics/n.md"}),
     ) {
         Err(AgentmemError::MissingScope { key }) => assert_eq!(key, "user"),
         other => panic!("expected missing_scope(user), got {other:?}"),
@@ -1187,7 +1187,7 @@ fn unexpected_scope_param_is_rejected() {
         call(
             &tb,
             "read_memory_note",
-            json!({"agent":"coder","user":"alice","path":"Agents/topics/n.md"}),
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
         ),
         "invalid_argument",
     );
@@ -1202,10 +1202,10 @@ fn custom_scheme_keys_are_honoured() {
         "<team>.<agent>.<env>.<user>",
         Policy::Namespaced,
     );
-    call(&tb, "write_memory_note", json!({"team":"platform","agent":"coder","env":"prod","user":"alice","path":"Agents/topics/plan.md","content":"x"})).unwrap();
+    call(&tb, "write_memory_note", json!({"team":"platform","agent":"jarvis","env":"prod","user":"tony","path":"Agents/topics/plan.md","content":"x"})).unwrap();
     assert!(
         tmp.path()
-            .join("Agents/platform.coder.prod.alice/topics/plan.platform.coder.prod.alice.md")
+            .join("Agents/platform.jarvis.prod.tony/topics/plan.platform.jarvis.prod.tony.md")
             .exists()
     );
 }
@@ -1226,7 +1226,7 @@ fn empty_scheme_requires_no_scope_args() {
         call(
             &tb,
             "write_memory_note",
-            json!({"agent":"coder","path":"Agents/topics/n.md","content":"x"}),
+            json!({"agent":"jarvis","path":"Agents/topics/n.md","content":"x"}),
         ),
         "invalid_argument",
     );
@@ -1241,13 +1241,13 @@ fn recall_finds_a_written_note_by_content() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/rust.md","content":"the borrow checker enforces ownership"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"the borrow checker enforces ownership"}),
     )
     .unwrap();
     let out = structured(call(
         &tb,
         "recall_memory_notes",
-        json!({"agent":"coder","user":"alice","query":"borrow"}),
+        json!({"agent":"jarvis","user":"tony","query":"borrow"}),
     ));
     let hits = out["hits"].as_array().unwrap();
     assert!(hits.iter().any(|h| h["path"] == "Agents/topics/rust.md"));
@@ -1263,19 +1263,19 @@ fn recall_does_not_cross_scope_boundaries() {
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"alice","path":"Agents/topics/a.md","content":"shared keyword zebra"}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/a.md","content":"shared keyword zebra"}),
     )
     .unwrap();
     call(
         &tb,
         "write_memory_note",
-        json!({"agent":"coder","user":"bob","path":"Agents/topics/b.md","content":"shared keyword zebra"}),
+        json!({"agent":"jarvis","user":"sam","path":"Agents/topics/b.md","content":"shared keyword zebra"}),
     )
     .unwrap();
     let out = structured(call(
         &tb,
         "recall_memory_notes",
-        json!({"agent":"coder","user":"alice","query":"zebra"}),
+        json!({"agent":"jarvis","user":"tony","query":"zebra"}),
     ));
     let hits = out["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1);
@@ -1290,7 +1290,7 @@ fn recall_requires_a_query_regex_or_filter() {
         call(
             &tb,
             "recall_memory_notes",
-            json!({"agent":"coder","user":"alice"}),
+            json!({"agent":"jarvis","user":"tony"}),
         ),
         "invalid_argument",
     );
@@ -1305,7 +1305,7 @@ fn recall_property_filters_are_unsupported_on_simple_backend() {
             &tb,
             "recall_memory_notes",
             json!({
-                "agent":"coder","user":"alice",
+                "agent":"jarvis","user":"tony",
                 "filters":[{"key":"tag","op":"eq","value":"rust"}]
             }),
         ),

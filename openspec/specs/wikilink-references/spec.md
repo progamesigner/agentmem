@@ -23,13 +23,13 @@ matching. The system SHALL NOT resolve a target to any file outside the caller's
 visible set.
 
 #### Scenario: Bare name resolves to a unique visible note
-- **WHEN** scope is `{agent:"coder", user:"alice"}`, the caller's own scope
+- **WHEN** scope is `{agent:"jarvis", user:"tony"}`, the caller's own scope
   contains `topics/rust.md`, and the caller writes a note containing `[[rust]]`
 - **THEN** the link resolves to `topics/rust.md` in the caller's own scope
 
 #### Scenario: Target in another scope does not resolve
 - **WHEN** the only note with basename `rust` on disk belongs to scope
-  `{agent:"coder", user:"bob"}` and the caller `{agent:"coder", user:"alice"}`
+  `{agent:"jarvis", user:"sam"}` and the caller `{agent:"jarvis", user:"tony"}`
   writes `[[rust]]`
 - **THEN** the target does not resolve (it is outside the caller's visible set)
   and the link is treated as dangling and left verbatim
@@ -60,10 +60,10 @@ physical basename, so the persisted link resolves in Obsidian. The system SHALL
 leave targets that resolve into the shared region unchanged (no suffix).
 
 #### Scenario: Own-scope target is suffixed on disk
-- **WHEN** scope renders to `coder.alice`, the caller writes a note inside its own
+- **WHEN** scope renders to `jarvis.tony`, the caller writes a note inside its own
   scope containing `[[rust]]`, and `rust` resolves to the caller's own
   `topics/rust.md`
-- **THEN** the persisted file content contains `[[rust.coder.alice]]`
+- **THEN** the persisted file content contains `[[rust.jarvis.tony]]`
 
 #### Scenario: Shared target is left clean on disk
 - **WHEN** the caller writes an own-scope note containing `[[release]]` and
@@ -77,12 +77,12 @@ On read, the system SHALL strip the caller's own rendered scope suffix from ever
 shortest names. The agent SHALL never observe a scope suffix in returned content.
 
 #### Scenario: Suffix is stripped on read
-- **WHEN** the persisted own-scope note content contains `[[rust.coder.alice]]`
-  and scope `{agent:"coder", user:"alice"}` reads it
+- **WHEN** the persisted own-scope note content contains `[[rust.jarvis.tony]]`
+  and scope `{agent:"jarvis", user:"tony"}` reads it
 - **THEN** the returned content contains `[[rust]]`
 
 #### Scenario: Round-trip is stable
-- **WHEN** scope `coder.alice` writes content containing `[[rust]]` (resolving in
+- **WHEN** scope `jarvis.tony` writes content containing `[[rust]]` (resolving in
   its own scope) and then reads the same note
 - **THEN** the returned content contains `[[rust]]`, identical to what was written
 
@@ -117,19 +117,19 @@ embed prefix, and markdown link text. The system SHALL leave external
 unchanged.
 
 #### Scenario: Alias and heading are preserved
-- **WHEN** scope renders to `coder.alice` and the caller writes an own-scope note
+- **WHEN** scope renders to `jarvis.tony` and the caller writes an own-scope note
   containing `[[rust|the Rust note]]` and `[[rust#install]]` resolving to its own
   `rust.md`
-- **THEN** the persisted content contains `[[rust.coder.alice|the Rust note]]` and
-  `[[rust.coder.alice#install]]`
+- **THEN** the persisted content contains `[[rust.jarvis.tony|the Rust note]]` and
+  `[[rust.jarvis.tony#install]]`
 
 #### Scenario: Embed target is rewritten with the prefix preserved
 - **WHEN** the caller writes an own-scope note containing `![[rust]]` resolving to
-  its own `rust.md` and scope renders to `coder.alice`
-- **THEN** the persisted content contains `![[rust.coder.alice]]`
+  its own `rust.md` and scope renders to `jarvis.tony`
+- **THEN** the persisted content contains `![[rust.jarvis.tony]]`
 
 #### Scenario: Relative markdown link round-trips
-- **WHEN** scope renders to `coder.alice` and the caller writes an own-scope note
+- **WHEN** scope renders to `jarvis.tony` and the caller writes an own-scope note
   containing `[see Rust](topics/rust.md)` resolving to its own `topics/rust.md`
 - **THEN** the persisted link resolves in Obsidian to the caller's physical file
   and a subsequent read returns `[see Rust](topics/rust.md)`

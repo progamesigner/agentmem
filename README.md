@@ -161,11 +161,11 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 
 The scheme defines how scope keys are spelled into directory segments and
 filename stems. With the default `<agent>.<user>` scheme and caller
-`{agent: "coder", user: "alice"}`, the virtual path `Agents/tasks/plan.md`
+`{agent: "jarvis", user: "tony"}`, the virtual path `Agents/tasks/plan.md`
 resolves to:
 
 ```
-<root>/Agents/coder.alice/tasks/plan.coder.alice.md
+<root>/Agents/jarvis.tony/tasks/plan.jarvis.tony.md
 ```
 
 The scope appears both as the per-scope directory and as a suffix on the file
@@ -179,17 +179,17 @@ whose, and another scope's file is structurally unaddressable.
 ```
 vault/
 ├── Agents/                       ← agent-owned region (scoped, suffixed)
-│   └── coder.alice/
-│       ├── PERSONA.coder.alice.md
-│       ├── MEMORY.coder.alice.md
-│       ├── HEARTBEAT.coder.alice.md
-│       └── diary/2026-05-25.coder.alice.md
+│   └── jarvis.tony/
+│       ├── PERSONA.jarvis.tony.md
+│       ├── MEMORY.jarvis.tony.md
+│       ├── HEARTBEAT.jarvis.tony.md
+│       └── diary/2026-05-25.jarvis.tony.md
 └── Actions/release.md            ← human-owned region (shared, no suffix)
 ```
 
 **Vault root as agents folder** (`AGENTMEM_AGENTS_DIR=.`): the whole vault is the
 agents folder, there is no "outside" region, and wrapper tools resolve to
-`PERSONA.coder.alice.md` at the vault root.
+`PERSONA.jarvis.tony.md` at the vault root.
 
 ## Tools
 
@@ -307,11 +307,11 @@ a query parameter; the scope is bound in scheme order:
 
 ```sh
 # Markdown by default — drop straight into a system prompt.
-curl 'http://127.0.0.1:8000/v1/context?agent=default&user=alice'
+curl 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony'
 
 # JSON ({ rendered, missing }) via content negotiation.
 curl -H 'Accept: application/json' \
-  'http://127.0.0.1:8000/v1/context?agent=default&user=alice'
+  'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony'
 ```
 
 Missing, empty, or unexpected scope parameters return `400` with a
@@ -606,8 +606,8 @@ Because the on-disk layout is plain markdown, a human can open the vault in any
 editor — Obsidian is a convenient choice — and hand-edit any `Agents/<scope>/...`
 file directly. The agent will see
 the human's edits as if it had written them itself — this is the supported channel
-for curating or correcting an agent's memory. Creating `plan.coder.alice.md` by
-hand makes it appear to the `coder.alice` scope as the virtual note `plan.md`.
+for curating or correcting an agent's memory. Creating `plan.jarvis.tony.md` by
+hand makes it appear to the `jarvis.tony` scope as the virtual note `plan.md`.
 
 ## Development
 

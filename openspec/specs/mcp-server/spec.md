@@ -129,8 +129,8 @@ The system SHALL expose a `session-context` resource at the templated URI `agent
 - **THEN** the listed URI is `agentmem://session-context/{agent}/{user}`
 
 #### Scenario: Reading a resource renders the context
-- **WHEN** a client calls `resources/read` for `agentmem://session-context/coder/alice`
-- **THEN** the response contents are the rendered session-context for scope `{agent: coder, user: alice}`
+- **WHEN** a client calls `resources/read` for `agentmem://session-context/jarvis/tony`
+- **THEN** the response contents are the rendered session-context for scope `{agent: jarvis, user: tony}`
 
 #### Scenario: Reading an empty-vault scope succeeds
 - **WHEN** a client reads the session-context resource for a scope with no foundational files and no template
@@ -144,7 +144,7 @@ The system SHALL expose a prompt named `session-context` through `prompts/list`,
 - **THEN** the `session-context` prompt declares required string arguments `agent` and `user`
 
 #### Scenario: Getting the prompt renders the context
-- **WHEN** a client calls `prompts/get` for `session-context` with `{agent: coder, user: alice}`
+- **WHEN** a client calls `prompts/get` for `session-context` with `{agent: jarvis, user: tony}`
 - **THEN** the returned message content is the rendered session-context for that scope
 
 #### Scenario: Missing required argument is rejected

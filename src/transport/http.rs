@@ -119,7 +119,7 @@ async fn readyz(State(server): State<AgentmemServer>) -> Response {
 /// `GET /v1/context` — render the per-scope session-context bootstrap.
 ///
 /// Each VFS-scheme placeholder is supplied as a query parameter (e.g.
-/// `?agent=default&user=alice`); the scheme's placeholders are bound into the
+/// `?agent=jarvis&user=tony`); the scheme's placeholders are bound into the
 /// scope in order. The same renderer that backs `load_session_context` produces
 /// the body. Returns `text/markdown` by default, or `{ rendered, missing }` JSON
 /// when the `Accept` header prefers `application/json`.

@@ -51,11 +51,11 @@ async fn resource_template_and_read_render_context() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let service = serve(&tmp, "<agent>.<user>").await;
 
-    // Seed a foundational file for coder/alice.
+    // Seed a foundational file for jarvis/tony.
     service
         .call_tool(
             CallToolRequestParams::new("evolve_core_persona").with_arguments(
-                json!({"agent":"coder","user":"alice","which":"persona","content":"PERSONA-BODY"})
+                json!({"agent":"jarvis","user":"tony","which":"persona","content":"PERSONA-BODY"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -78,7 +78,7 @@ async fn resource_template_and_read_render_context() {
     // resources/read for a populated scope renders the persona body.
     let read = service
         .read_resource(ReadResourceRequestParams::new(
-            "agentmem://session-context/coder/alice",
+            "agentmem://session-context/jarvis/tony",
         ))
         .await
         .unwrap();
@@ -89,7 +89,7 @@ async fn resource_template_and_read_render_context() {
     // Empty-vault scope still succeeds, with the missing sentinel.
     let read_empty = service
         .read_resource(ReadResourceRequestParams::new(
-            "agentmem://session-context/coder/bob",
+            "agentmem://session-context/jarvis/sam",
         ))
         .await
         .unwrap();
@@ -106,7 +106,7 @@ async fn prompt_lists_args_and_renders() {
     service
         .call_tool(
             CallToolRequestParams::new("evolve_core_persona").with_arguments(
-                json!({"agent":"coder","user":"alice","which":"persona","content":"PROMPT-PERSONA"})
+                json!({"agent":"jarvis","user":"tony","which":"persona","content":"PROMPT-PERSONA"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -133,7 +133,7 @@ async fn prompt_lists_args_and_renders() {
     let got = service
         .get_prompt(
             GetPromptRequestParams::new("session-context").with_arguments(
-                json!({"agent":"coder","user":"alice"})
+                json!({"agent":"jarvis","user":"tony"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -147,7 +147,7 @@ async fn prompt_lists_args_and_renders() {
     let err = service
         .get_prompt(
             GetPromptRequestParams::new("session-context")
-                .with_arguments(json!({"agent":"coder"}).as_object().unwrap().clone()),
+                .with_arguments(json!({"agent":"jarvis"}).as_object().unwrap().clone()),
         )
         .await;
     assert!(err.is_err(), "missing scope arg should error");
@@ -182,7 +182,7 @@ async fn surfaces_follow_a_custom_scheme() {
     // A single-segment read resolves under the one-key scheme.
     let read = service
         .read_resource(ReadResourceRequestParams::new(
-            "agentmem://session-context/coder",
+            "agentmem://session-context/jarvis",
         ))
         .await
         .unwrap();

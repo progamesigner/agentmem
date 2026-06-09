@@ -80,11 +80,11 @@ The system SHALL honour `AGENTMEM_VFS_SCHEME` as a dotted scheme string composed
 
 #### Scenario: Custom multi-key scheme
 - **WHEN** `AGENTMEM_VFS_SCHEME=<team>.<agent>.<env>.<user>`
-- **THEN** every tool's input schema includes four required string fields `team`, `agent`, `env`, `user`; the rendered suffix for `{team:"platform", agent:"coder", env:"prod", user:"alice"}` is `platform.coder.prod.alice`
+- **THEN** every tool's input schema includes four required string fields `team`, `agent`, `env`, `user`; the rendered suffix for `{team:"platform", agent:"jarvis", env:"prod", user:"tony"}` is `platform.jarvis.prod.tony`
 
 #### Scenario: Literal segments in scheme
 - **WHEN** `AGENTMEM_VFS_SCHEME=v1.<agent>.<user>`
-- **THEN** the rendered suffix for `{agent:"coder", user:"alice"}` is `v1.coder.alice` and tool schemas require only `agent` and `user`
+- **THEN** the rendered suffix for `{agent:"jarvis", user:"tony"}` is `v1.jarvis.tony` and tool schemas require only `agent` and `user`
 
 #### Scenario: Malformed scheme
 - **WHEN** `AGENTMEM_VFS_SCHEME=<agent` (unclosed bracket) or contains characters outside the grammar

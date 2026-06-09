@@ -665,12 +665,12 @@ mod tests {
     /// Build an engine over a two-scope vault with a shared note.
     fn engine() -> (TempDir, RecallEngine) {
         let tmp = TempDir::new().unwrap();
-        // coder.alice owns a note; coder.bob owns a note that also says "borrow".
-        tmp.child("Agents/coder.alice/topics/rust.coder.alice.md")
+        // jarvis.tony owns a note; jarvis.sam owns a note that also says "borrow".
+        tmp.child("Agents/jarvis.tony/topics/rust.jarvis.tony.md")
             .write_str("The borrow checker enforces ownership.")
             .unwrap();
-        tmp.child("Agents/coder.bob/topics/secret.coder.bob.md")
-            .write_str("Bob's borrow secret lives here.")
+        tmp.child("Agents/jarvis.sam/topics/secret.jarvis.sam.md")
+            .write_str("Sam's borrow secret lives here.")
             .unwrap();
         // A shared note outside the agents folder.
         tmp.child("Actions/release.md")
@@ -717,18 +717,18 @@ mod tests {
     fn recall_finds_own_scope_and_shared_but_never_another_scope() {
         let (_tmp, engine) = engine();
         let results = engine
-            .recall("coder.alice", BOTH, &query("borrow"))
+            .recall("jarvis.tony", BOTH, &query("borrow"))
             .unwrap();
         let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
 
         assert!(paths.contains(&"Agents/topics/rust.md"));
         assert!(paths.contains(&"Actions/release.md"));
-        // Structural isolation: bob's note is in a different index and unreachable.
+        // Structural isolation: sam's note is in a different index and unreachable.
         for hit in &results.hits {
-            assert!(!hit.path.contains("bob"), "leaked path: {}", hit.path);
+            assert!(!hit.path.contains("sam"), "leaked path: {}", hit.path);
             assert!(!hit.path.contains("secret"), "leaked path: {}", hit.path);
             for snip in &hit.snippets {
-                assert!(!snip.contains("Bob"), "leaked snippet: {snip}");
+                assert!(!snip.contains("Sam"), "leaked snippet: {snip}");
             }
         }
     }
@@ -738,7 +738,7 @@ mod tests {
         let (_tmp, engine) = engine();
         let results = engine
             .recall(
-                "coder.alice",
+                "jarvis.tony",
                 &[Region::InsideAgentsFolder],
                 &query("borrow"),
             )
@@ -752,7 +752,7 @@ mod tests {
     fn scores_are_normalized_zero_to_one() {
         let (_tmp, engine) = engine();
         let results = engine
-            .recall("coder.alice", BOTH, &query("borrow"))
+            .recall("jarvis.tony", BOTH, &query("borrow"))
             .unwrap();
         assert!(!results.hits.is_empty());
         for hit in &results.hits {
@@ -769,7 +769,7 @@ mod tests {
             op: FilterOp::Eq,
             value: Some("rust".to_string()),
         });
-        let err = engine.recall("coder.alice", BOTH, &q).unwrap_err();
+        let err = engine.recall("jarvis.tony", BOTH, &q).unwrap_err();
         assert_eq!(err.code(), crate::error::ErrorCode::Unsupported);
     }
 
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn tantivy_backend_applies_property_filters_end_to_end() {
         let tmp = TempDir::new().unwrap();
-        tmp.child("Agents/coder.alice/topics/rust.coder.alice.md")
+        tmp.child("Agents/jarvis.tony/topics/rust.jarvis.tony.md")
             .write_str("---\nstatus: published\n---\nThe borrow checker enforces ownership.")
             .unwrap();
         let resolver = PathResolver::new(
@@ -802,7 +802,7 @@ mod tests {
             op: FilterOp::Eq,
             value: Some("published".into()),
         });
-        let hits = engine.recall("coder.alice", BOTH, &q).unwrap().hits;
+        let hits = engine.recall("jarvis.tony", BOTH, &q).unwrap().hits;
         assert!(hits.iter().any(|h| h.path == "Agents/topics/rust.md"));
 
         // A non-matching property filter excludes the note.
@@ -814,7 +814,7 @@ mod tests {
         });
         assert!(
             engine
-                .recall("coder.alice", BOTH, &q2)
+                .recall("jarvis.tony", BOTH, &q2)
                 .unwrap()
                 .hits
                 .is_empty()
@@ -826,16 +826,16 @@ mod tests {
         let (tmp, engine) = engine();
         engine.warm();
         // A new own-scope note, then the synchronous own-write hook.
-        let path = tmp.child("Agents/coder.alice/topics/async.coder.alice.md");
+        let path = tmp.child("Agents/jarvis.tony/topics/async.jarvis.tony.md");
         path.write_str("Futures are polled by the executor.")
             .unwrap();
         let resolver = engine.storage.resolver();
         let vpath = crate::path::VirtualPath::new("Agents/topics/async.md").unwrap();
-        let physical = resolver.resolve("coder.alice", &vpath).unwrap();
-        engine.on_write("coder.alice", Region::InsideAgentsFolder, &physical);
+        let physical = resolver.resolve("jarvis.tony", &vpath).unwrap();
+        engine.on_write("jarvis.tony", Region::InsideAgentsFolder, &physical);
 
         let results = engine
-            .recall("coder.alice", BOTH, &query("futures"))
+            .recall("jarvis.tony", BOTH, &query("futures"))
             .unwrap();
         let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
         assert!(paths.contains(&"Agents/topics/async.md"));

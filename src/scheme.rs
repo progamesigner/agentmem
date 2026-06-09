@@ -216,9 +216,9 @@ mod tests {
         let t = Scheme::parse("<agent>.<user>").unwrap();
         assert_eq!(t.placeholders(), vec!["agent", "user"]);
         assert_eq!(
-            t.render(&scope(&[("agent", "coder"), ("user", "alice")]))
+            t.render(&scope(&[("agent", "jarvis"), ("user", "tony")]))
                 .unwrap(),
-            "coder.alice"
+            "jarvis.tony"
         );
     }
 
@@ -226,7 +226,7 @@ mod tests {
     fn single_key_scheme() {
         let t = Scheme::parse("<agent>").unwrap();
         assert_eq!(t.placeholders(), vec!["agent"]);
-        assert_eq!(t.render(&scope(&[("agent", "coder")])).unwrap(), "coder");
+        assert_eq!(t.render(&scope(&[("agent", "jarvis")])).unwrap(), "jarvis");
     }
 
     #[test]
@@ -244,12 +244,12 @@ mod tests {
         assert_eq!(
             t.render(&scope(&[
                 ("team", "platform"),
-                ("agent", "coder"),
+                ("agent", "jarvis"),
                 ("env", "prod"),
-                ("user", "alice"),
+                ("user", "tony"),
             ]))
             .unwrap(),
-            "platform.coder.prod.alice"
+            "platform.jarvis.prod.tony"
         );
     }
 
@@ -258,9 +258,9 @@ mod tests {
         let t = Scheme::parse("v1.<agent>.<user>").unwrap();
         assert_eq!(t.placeholders(), vec!["agent", "user"]);
         assert_eq!(
-            t.render(&scope(&[("agent", "coder"), ("user", "alice")]))
+            t.render(&scope(&[("agent", "jarvis"), ("user", "tony")]))
                 .unwrap(),
-            "v1.coder.alice"
+            "v1.jarvis.tony"
         );
     }
 
@@ -310,7 +310,7 @@ mod tests {
     fn render_rejects_missing_key() {
         let t = Scheme::parse("<agent>.<user>").unwrap();
         assert_eq!(
-            t.render(&scope(&[("agent", "coder")])),
+            t.render(&scope(&[("agent", "jarvis")])),
             Err(RenderError::MissingKey("user".to_string()))
         );
     }
@@ -319,7 +319,7 @@ mod tests {
     fn render_rejects_extra_key() {
         let t = Scheme::parse("<agent>").unwrap();
         assert_eq!(
-            t.render(&scope(&[("agent", "coder"), ("user", "alice")])),
+            t.render(&scope(&[("agent", "jarvis"), ("user", "tony")])),
             Err(RenderError::UnexpectedKey("user".to_string()))
         );
     }

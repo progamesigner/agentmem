@@ -5,7 +5,7 @@
 //! This is the content-level counterpart of the filename suffix transform in
 //! [`crate::path`]. On **write**, a link an agent writes (`[[rust]]`) is resolved
 //! against the caller's visible set and rewritten to the physical form that
-//! resolves in Obsidian (`[[rust.coder.alice]]` for an own-scope target, or a
+//! resolves in Obsidian (`[[rust.jarvis.tony]]` for an own-scope target, or a
 //! vault-root-relative physical path for a markdown link). On **read**, the
 //! caller's own suffix is stripped so the agent only ever sees clean shortest
 //! names and never another scope's existence.
@@ -421,15 +421,15 @@ mod tests {
         let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
         let out = expand_links(
             "see [[rust]]",
-            "coder.alice",
+            "jarvis.tony",
             Region::InsideAgentsFolder,
             &r,
             &idx,
         )
         .unwrap();
-        assert_eq!(out, "see [[rust.coder.alice]]");
+        assert_eq!(out, "see [[rust.jarvis.tony]]");
         // Round-trip: strip recovers the clean name.
-        assert_eq!(strip_links(&out, "coder.alice", &r), "see [[rust]]");
+        assert_eq!(strip_links(&out, "jarvis.tony", &r), "see [[rust]]");
     }
 
     #[test]
@@ -439,7 +439,7 @@ mod tests {
         let idx = index(&[("Actions/release.md", Region::OutsideAgentsFolder)]);
         let out = expand_links(
             "[[release]]",
-            "coder.alice",
+            "jarvis.tony",
             Region::InsideAgentsFolder,
             &r,
             &idx,
@@ -455,7 +455,7 @@ mod tests {
         let idx = index(&[]);
         let out = expand_links(
             "[[not-yet]] and [x](future.md)",
-            "coder.alice",
+            "jarvis.tony",
             Region::InsideAgentsFolder,
             &r,
             &idx,
@@ -471,7 +471,7 @@ mod tests {
         let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
         let err = expand_links(
             "[[rust]]",
-            "coder.alice",
+            "jarvis.tony",
             Region::OutsideAgentsFolder,
             &r,
             &idx,
@@ -488,7 +488,7 @@ mod tests {
         let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
         let out = expand_links(
             "[see Rust](topics/rust.md)",
-            "coder.alice",
+            "jarvis.tony",
             Region::InsideAgentsFolder,
             &r,
             &idx,
@@ -497,11 +497,11 @@ mod tests {
         // The persisted link is the full vault-root-relative physical path.
         assert_eq!(
             out,
-            "[see Rust](Agents/coder.alice/topics/rust.coder.alice.md)"
+            "[see Rust](Agents/jarvis.tony/topics/rust.jarvis.tony.md)"
         );
         // Read strips the scope dir + suffix back to the agents-relative path.
         assert_eq!(
-            strip_links(&out, "coder.alice", &r),
+            strip_links(&out, "jarvis.tony", &r),
             "[see Rust](topics/rust.md)"
         );
     }
@@ -523,12 +523,12 @@ mod tests {
              md [doc](topics/guide.md), shared md [r](Actions/release.md), \
              external [w](https://x.com), anchor [a](#top), dangling [[ghost]].";
         let expanded =
-            expand_links(clean, "coder.alice", Region::InsideAgentsFolder, &r, &idx).unwrap();
+            expand_links(clean, "jarvis.tony", Region::InsideAgentsFolder, &r, &idx).unwrap();
         // The expanded form differs (own-scope links carry the suffix)...
-        assert!(expanded.contains("[[rust.coder.alice]]"));
-        assert!(expanded.contains("(Agents/coder.alice/topics/guide.coder.alice.md)"));
+        assert!(expanded.contains("[[rust.jarvis.tony]]"));
+        assert!(expanded.contains("(Agents/jarvis.tony/topics/guide.jarvis.tony.md)"));
         // ...but stripping it recovers exactly the clean content.
-        assert_eq!(strip_links(&expanded, "coder.alice", &r), clean);
+        assert_eq!(strip_links(&expanded, "jarvis.tony", &r), clean);
     }
 
     #[test]
@@ -538,7 +538,7 @@ mod tests {
         let idx = index(&[("Agents/rust.md", Region::InsideAgentsFolder)]);
         let out = expand_links(
             "[[rust#install|the Rust note]] and ![[rust]]",
-            "coder.alice",
+            "jarvis.tony",
             Region::InsideAgentsFolder,
             &r,
             &idx,
@@ -546,7 +546,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             out,
-            "[[rust.coder.alice#install|the Rust note]] and ![[rust.coder.alice]]"
+            "[[rust.jarvis.tony#install|the Rust note]] and ![[rust.jarvis.tony]]"
         );
     }
 }

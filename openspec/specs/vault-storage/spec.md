@@ -22,28 +22,28 @@ The system SHALL canonicalise every virtual path against the configured vault ro
 The system SHALL, on every tool call, validate that the supplied scope arguments exactly match the placeholder idents of the configured `AGENTMEM_VFS_SCHEME`, and SHALL render the scheme into a single string used as both the per-scope directory segment under the agents folder and the dotted suffix appended to the file stem inside the agents folder.
 
 #### Scenario: Default scheme resolves agent and user
-- **WHEN** scheme is `<agent>.<user>`, scope is `{agent:"coder", user:"alice"}`, agents folder is `Agents`, and virtual path is `tasks/plan.md`
-- **THEN** the resolved physical path is `<root>/Agents/coder.alice/tasks/plan.coder.alice.md`
+- **WHEN** scheme is `<agent>.<user>`, scope is `{agent:"jarvis", user:"tony"}`, agents folder is `Agents`, and virtual path is `tasks/plan.md`
+- **THEN** the resolved physical path is `<root>/Agents/jarvis.tony/tasks/plan.jarvis.tony.md`
 
 #### Scenario: Single-key scheme
-- **WHEN** scheme is `<agent>`, scope is `{agent:"coder"}`, agents folder is `Agents`, and virtual path is `HEARTBEAT-STATE.md`
-- **THEN** the resolved physical path is `<root>/Agents/coder/HEARTBEAT-STATE.coder.md`
+- **WHEN** scheme is `<agent>`, scope is `{agent:"jarvis"}`, agents folder is `Agents`, and virtual path is `HEARTBEAT-STATE.md`
+- **THEN** the resolved physical path is `<root>/Agents/jarvis/HEARTBEAT-STATE.jarvis.md`
 
 #### Scenario: Multi-key scheme
-- **WHEN** scheme is `<team>.<agent>.<env>.<user>`, scope is `{team:"platform", agent:"coder", env:"prod", user:"alice"}`, agents folder is `Agents`, and virtual path is `tasks/plan.md`
-- **THEN** the resolved physical path is `<root>/Agents/platform.coder.prod.alice/tasks/plan.platform.coder.prod.alice.md`
+- **WHEN** scheme is `<team>.<agent>.<env>.<user>`, scope is `{team:"platform", agent:"jarvis", env:"prod", user:"tony"}`, agents folder is `Agents`, and virtual path is `tasks/plan.md`
+- **THEN** the resolved physical path is `<root>/Agents/platform.jarvis.prod.tony/tasks/plan.platform.jarvis.prod.tony.md`
 
 #### Scenario: Scheme with literal segment
-- **WHEN** scheme is `v1.<agent>.<user>`, scope is `{agent:"coder", user:"alice"}`, agents folder is `Agents`, and virtual path is `tasks/plan.md`
-- **THEN** the resolved physical path is `<root>/Agents/v1.coder.alice/tasks/plan.v1.coder.alice.md`
+- **WHEN** scheme is `v1.<agent>.<user>`, scope is `{agent:"jarvis", user:"tony"}`, agents folder is `Agents`, and virtual path is `tasks/plan.md`
+- **THEN** the resolved physical path is `<root>/Agents/v1.jarvis.tony/tasks/plan.v1.jarvis.tony.md`
 
 #### Scenario: Empty scheme applies no suffix
 - **WHEN** scheme is the empty string and virtual path is `notes.md`
 - **THEN** the resolved physical path is `<root>/<agents_dir>/notes.md` with no per-scope directory and no suffix
 
 #### Scenario: Vault root as agents folder
-- **WHEN** `AGENTMEM_AGENTS_DIR=.`, scheme is `<agent>.<user>`, scope is `{agent:"coder", user:"alice"}`, virtual path is `tasks/plan.md`
-- **THEN** the resolved physical path is `<root>/coder.alice/tasks/plan.coder.alice.md` and the "outside the agents folder" region is empty
+- **WHEN** `AGENTMEM_AGENTS_DIR=.`, scheme is `<agent>.<user>`, scope is `{agent:"jarvis", user:"tony"}`, virtual path is `tasks/plan.md`
+- **THEN** the resolved physical path is `<root>/jarvis.tony/tasks/plan.jarvis.tony.md` and the "outside the agents folder" region is empty
 
 #### Scenario: Missing required scope key
 - **WHEN** scheme is `<agent>.<user>` and a tool is called with `agent` set but `user` missing
@@ -102,16 +102,16 @@ The system SHALL enforce permissions according to `AGENTMEM_POLICY` and the regi
 Inside the agents folder, when the scheme is non-empty, the system SHALL only allow read, write, edit, and list operations on files whose physical path's rendered suffix matches the caller's rendered suffix. Files belonging to other scopes SHALL be invisible (absent from listings) AND inaccessible (any direct attempt to address them resolves to `not_found`).
 
 #### Scenario: Other scope's file is unreachable
-- **WHEN** the resolver is invoked for scope `{agent:"coder", user:"alice"}` on virtual path `tasks/plan.md` and the only file on disk in that directory is `plan.coder.bob.md`
-- **THEN** the operation is refused with code `not_found` (the resolved file for the caller is `plan.coder.alice.md`, which does not exist) and `plan.coder.bob.md` is NOT read
+- **WHEN** the resolver is invoked for scope `{agent:"jarvis", user:"tony"}` on virtual path `tasks/plan.md` and the only file on disk in that directory is `plan.jarvis.sam.md`
+- **THEN** the operation is refused with code `not_found` (the resolved file for the caller is `plan.jarvis.tony.md`, which does not exist) and `plan.jarvis.sam.md` is NOT read
 
 #### Scenario: Crafted virtual path cannot reach other scope
-- **WHEN** an agent in scope `{agent:"coder", user:"alice"}` attempts to address another scope's physical file by passing a virtual path that includes the other scope's suffix in the stem (e.g. `tasks/plan.coder.bob.md`)
-- **THEN** the resolver applies the caller's own suffix on top, producing `plan.coder.bob.md.coder.alice.md` which does not exist and is reported as `not_found`; under no input does the resolver ever open another scope's file
+- **WHEN** an agent in scope `{agent:"jarvis", user:"tony"}` attempts to address another scope's physical file by passing a virtual path that includes the other scope's suffix in the stem (e.g. `tasks/plan.jarvis.sam.md`)
+- **THEN** the resolver applies the caller's own suffix on top, producing `plan.jarvis.sam.md.jarvis.tony.md` which does not exist and is reported as `not_found`; under no input does the resolver ever open another scope's file
 
 #### Scenario: Listing only shows own scope
-- **WHEN** `list_workspace_files` is called for scope `{agent:"coder", user:"alice"}` and the disk contains files for `coder.alice`, `coder.bob`, and `writer.alice` under the agents folder
-- **THEN** only the `coder.alice` files appear in the result, with suffixes stripped
+- **WHEN** `list_workspace_files` is called for scope `{agent:"jarvis", user:"tony"}` and the disk contains files for `jarvis.tony`, `jarvis.sam`, and `friday.tony` under the agents folder
+- **THEN** only the `jarvis.tony` files appear in the result, with suffixes stripped
 
 #### Scenario: Empty scheme removes own-scope filtering
 - **WHEN** scheme is the empty string, policy is `namespaced`, and `list_workspace_files` is called
@@ -209,9 +209,9 @@ rendered suffix, and the system SHALL never persist a link bearing another scope
 suffix in a file readable by a different scope.
 
 #### Scenario: Persisted own-scope link carries only the owner's suffix
-- **WHEN** scope `{agent:"coder", user:"alice"}` writes an own-scope note linking
+- **WHEN** scope `{agent:"jarvis", user:"tony"}` writes an own-scope note linking
   to its own `rust.md`
-- **THEN** the persisted link target is `rust.coder.alice` and contains no other
+- **THEN** the persisted link target is `rust.jarvis.tony` and contains no other
   scope's suffix
 
 #### Scenario: A scoped suffix is never persisted in a shared file
@@ -242,10 +242,10 @@ another scope SHALL be structurally unreachable by a recall query, not merely
 filtered out, and ignored/hidden notes SHALL never enter any index.
 
 #### Scenario: Recall cannot cross a scope boundary
-- **WHEN** a recall is issued for scope `{agent:"coder", user:"alice"}` and the vault
-  contains matching notes for `coder.bob`
-- **THEN** the query opens only alice's index (and the shared index when permitted),
-  so no byte of `coder.bob`'s content can appear in any hit, path, or snippet
+- **WHEN** a recall is issued for scope `{agent:"jarvis", user:"tony"}` and the vault
+  contains matching notes for `jarvis.sam`
+- **THEN** the query opens only tony's index (and the shared index when permitted),
+  so no byte of `jarvis.sam`'s content can appear in any hit, path, or snippet
 
 #### Scenario: Ignored content stays out of the index
 - **WHEN** a note is excluded by an active `.gitignore`/`.obsidianignore`/`.ignore`
