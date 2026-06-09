@@ -377,6 +377,31 @@ impl Storage {
         Ok(index)
     }
 
+    /// The rendered-scope directory names directly under the agents folder (e.g.
+    /// `coder.alice`). Each names one per-scope region; used by the recall engine
+    /// to enumerate every scope for its eager startup build. Returns an empty list
+    /// when the agents folder is the vault root (single-tenant: there are no
+    /// per-scope directories).
+    pub fn list_scope_dirs(&self) -> Vec<String> {
+        if self.resolver.agents_dir().as_str().is_empty() {
+            return Vec::new();
+        }
+        let agents_root = self.agents_root();
+        let Ok(entries) = std::fs::read_dir(&agents_root) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && let Some(name) = entry.file_name().to_str()
+            {
+                out.push(name.to_string());
+            }
+        }
+        out.sort();
+        out
+    }
+
     // --- internals ---
 
     fn agents_root(&self) -> PathBuf {

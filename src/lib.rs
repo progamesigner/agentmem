@@ -8,6 +8,7 @@ pub mod error;
 pub mod mcp;
 pub mod path;
 pub mod policy;
+pub mod recall;
 pub mod scheme;
 pub mod session_context;
 pub mod storage;
