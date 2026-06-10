@@ -1,6 +1,5 @@
 ---
 source: tests/schema_snapshots.rs
-assertion_line: 63
 expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
 ---
 {
@@ -215,6 +214,14 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
           "description": "Scope key 'env' identifying the caller.",
           "minLength": 1,
           "type": "string"
+        },
+        "glob": {
+          "default": null,
+          "description": "Optional glob pattern matched against each entry's clean, vault-root-relative\nvirtual path (e.g. `Agents/diary/2026-*`, `**/release.md`). Supports `*`, `**`,\n`?`, and character classes. Composes with `path_prefix` via AND (both must\nmatch). Filters paths only; reads no note contents.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "limit": {
           "default": null,

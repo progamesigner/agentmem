@@ -54,6 +54,12 @@ struct ListFields {
     /// Optional virtual-path prefix, relative to the agents folder, to filter by.
     #[serde(default)]
     path_prefix: Option<String>,
+    /// Optional glob pattern matched against each entry's clean, vault-root-relative
+    /// virtual path (e.g. `Agents/diary/2026-*`, `**/release.md`). Supports `*`, `**`,
+    /// `?`, and character classes. Composes with `path_prefix` via AND (both must
+    /// match). Filters paths only; reads no note contents.
+    #[serde(default)]
+    glob: Option<String>,
     /// Maximum number of entries to return (default 200, maximum 1000).
     #[serde(default)]
     limit: Option<u64>,
@@ -453,9 +459,19 @@ impl Toolbox {
     // --- handlers ---
 
     fn list_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["path_prefix", "limit", "cursor"])?;
+        let scope = self.resolve_scope(args, &["path_prefix", "glob", "limit", "cursor"])?;
 
         let path_prefix = opt_str(args, "path_prefix")?;
+        let glob = match opt_str(args, "glob")? {
+            Some(pattern) => Some(
+                globset::Glob::new(&pattern)
+                    .map_err(|e| AgentmemError::InvalidArgument {
+                        message: format!("invalid glob: {e}"),
+                    })?
+                    .compile_matcher(),
+            ),
+            None => None,
+        };
         let limit = match opt_u64(args, "limit")? {
             Some(n) if n > MAX_LIMIT => {
                 return Err(AgentmemError::InvalidArgument {
@@ -487,6 +503,10 @@ impl Toolbox {
             };
             let with_sep = format!("{effective}/");
             items.retain(|p| p == &effective || p.starts_with(&with_sep));
+        }
+
+        if let Some(matcher) = &glob {
+            items.retain(|p| matcher.is_match(p));
         }
 
         let total = items.len() as u64;

@@ -4,7 +4,7 @@
 TBD - created by archiving change build-agentmem-mcp-server. Update Purpose after archive.
 ## Requirements
 ### Requirement: `list_memory_notes` tool
-The system SHALL expose a `list_memory_notes` tool that returns a paginated set of virtual paths visible to a given scope, including both inside-agents-folder files belonging to that scope and outside-agents-folder files reachable under the active policy.
+The system SHALL expose a `list_memory_notes` tool that returns a paginated set of virtual paths visible to a given scope, including both inside-agents-folder files belonging to that scope and outside-agents-folder files reachable under the active policy. The tool SHALL accept an optional `glob` argument that filters the visible set to entries whose clean, vault-root-relative virtual path matches the glob pattern; `glob` is applied as an in-memory filter over visible paths and SHALL NOT read note contents. When both `path_prefix` and `glob` are supplied, an entry SHALL be returned only if it satisfies both. An invalid glob pattern SHALL be rejected with `invalid_argument`.
 
 #### Scenario: Lists own-scope and outside files under namespaced policy
 - **WHEN** the tool is invoked with the active scope, policy is `namespaced`, and the vault contains scope-owned files inside the agents folder plus human-authored files outside it
@@ -13,6 +13,18 @@ The system SHALL expose a `list_memory_notes` tool that returns a paginated set 
 #### Scenario: Optional path prefix filter
 - **WHEN** the tool is invoked with `path_prefix="topics"` and the agents folder is `Agents`
 - **THEN** only entries whose virtual path begins with `topics` (under the agents folder) are returned
+
+#### Scenario: Optional glob filter over the virtual path
+- **WHEN** the tool is invoked with `glob="Agents/diary/2026-*"` and the visible set contains `Agents/diary/2026-06-10.md` and `Agents/topics/rust.md`
+- **THEN** only `Agents/diary/2026-06-10.md` is returned
+
+#### Scenario: glob composes with path_prefix
+- **WHEN** the tool is invoked with `path_prefix="topics"` and `glob="**/*.md"`
+- **THEN** only entries that both fall under `topics` (within the agents folder) and match `**/*.md` are returned
+
+#### Scenario: Invalid glob is rejected
+- **WHEN** the tool is invoked with a `glob` argument that is not a valid glob pattern
+- **THEN** the response is an MCP error with code `invalid_argument`
 
 #### Scenario: Other scopes' files are hidden
 - **WHEN** the tool is invoked with scope `{agent:"jarvis", user:"tony"}` and the vault also contains files for `jarvis.sam`

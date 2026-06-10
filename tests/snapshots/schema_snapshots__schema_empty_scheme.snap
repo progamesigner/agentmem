@@ -1,6 +1,5 @@
 ---
 source: tests/schema_snapshots.rs
-assertion_line: 48
 expression: "schemas_for(\"\")"
 ---
 {
@@ -105,6 +104,14 @@ expression: "schemas_for(\"\")"
         "cursor": {
           "default": null,
           "description": "Opaque pagination cursor returned by a previous call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "glob": {
+          "default": null,
+          "description": "Optional glob pattern matched against each entry's clean, vault-root-relative\nvirtual path (e.g. `Agents/diary/2026-*`, `**/release.md`). Supports `*`, `**`,\n`?`, and character classes. Composes with `path_prefix` via AND (both must\nmatch). Filters paths only; reads no note contents.",
           "type": [
             "string",
             "null"

@@ -15,6 +15,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "dashmap",
+ "globset",
  "ignore",
  "insta",
  "notify",

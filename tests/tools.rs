@@ -160,6 +160,135 @@ fn list_path_prefix_filters_inside_agents_folder() {
 }
 
 #[test]
+fn list_glob_filters_by_virtual_path() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/diary/2026-06-10.md","content":"x"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","glob":"Agents/diary/2026-*"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items, vec!["Agents/diary/2026-06-10.md"]);
+}
+
+#[test]
+fn list_glob_composes_with_path_prefix() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/notes.txt","content":"x"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/other/go.md","content":"x"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","path_prefix":"topics","glob":"**/*.md"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items, vec!["Agents/topics/rust.md"]);
+}
+
+#[test]
+fn list_invalid_glob_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "list_memory_notes",
+            json!({"agent":"jarvis","user":"tony","glob":"Agents/[unterminated"}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn list_glob_preserves_ordering_and_pagination() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for name in ["c", "a", "b"] {
+        call(&tb, "write_memory_note", json!({"agent":"jarvis","user":"tony","path":format!("Agents/topics/{name}.md"),"content":"x"})).unwrap();
+    }
+    // A non-matching note that the glob must exclude from every page.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/skip.txt","content":"x"}),
+    )
+    .unwrap();
+
+    let page1 = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","glob":"Agents/topics/*.md","limit":2}),
+    ));
+    let items1: Vec<&str> = page1["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items1, vec!["Agents/topics/a.md", "Agents/topics/b.md"]);
+    let cursor = page1["next_cursor"]
+        .as_str()
+        .expect("cursor on first page")
+        .to_string();
+
+    let page2 = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","glob":"Agents/topics/*.md","limit":2,"cursor":cursor}),
+    ));
+    let items2: Vec<&str> = page2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items2, vec!["Agents/topics/c.md"]);
+    assert!(page2["next_cursor"].is_null());
+}
+
+#[test]
 fn list_hides_other_scopes() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);
