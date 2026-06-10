@@ -9,7 +9,7 @@
 //! resolved under the caller's own scope, the policy gate runs before any IO, and
 //! visibility filters reject hidden/ignored targets.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -72,6 +72,14 @@ struct ListFields {
     /// Opaque pagination cursor returned by a previous call.
     #[serde(default)]
     cursor: Option<String>,
+    /// Optional selector for what the items represent: `files` (the default)
+    /// returns individual note virtual paths; `dirs` returns the distinct
+    /// directory virtual paths derived from the visible set — every ancestor
+    /// directory of a visible note, deduplicated and deterministically ordered.
+    /// The `dirs` view honors `path_prefix`/`glob` and pagination and reads no
+    /// note contents.
+    #[serde(default)]
+    view: Option<String>,
 }
 
 /// Result ordering for `list_memory_notes`, by clean virtual path.
@@ -79,6 +87,13 @@ struct ListFields {
 enum ListOrder {
     NameAsc,
     NameDesc,
+}
+
+/// What `list_memory_notes` items represent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListView {
+    Files,
+    Dirs,
 }
 
 #[derive(JsonSchema)]
@@ -472,8 +487,20 @@ impl Toolbox {
     // --- handlers ---
 
     fn list_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope =
-            self.resolve_scope(args, &["path_prefix", "glob", "order", "limit", "cursor"])?;
+        let scope = self.resolve_scope(
+            args,
+            &["path_prefix", "glob", "order", "limit", "cursor", "view"],
+        )?;
+
+        let view = match opt_str(args, "view")?.as_deref() {
+            None | Some("files") => ListView::Files,
+            Some("dirs") => ListView::Dirs,
+            Some(other) => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!("view must be \"files\" or \"dirs\", got {other:?}"),
+                });
+            }
+        };
 
         let order = match opt_str(args, "order")?.as_deref() {
             None | Some("name_asc") => ListOrder::NameAsc,
@@ -535,6 +562,25 @@ impl Toolbox {
 
         if let Some(matcher) = &glob {
             items.retain(|p| matcher.is_match(p));
+        }
+
+        if matches!(view, ListView::Dirs) {
+            // Derive every ancestor directory of each visible file. A BTreeSet
+            // deduplicates and yields deterministic ascending order; the order
+            // selector then reverses it to match the files view.
+            let mut dirs: BTreeSet<String> = BTreeSet::new();
+            for path in &items {
+                let mut end = 0;
+                while let Some(idx) = path[end..].find('/') {
+                    let cut = end + idx;
+                    dirs.insert(path[..cut].to_string());
+                    end = cut + 1;
+                }
+            }
+            items = dirs.into_iter().collect();
+            if matches!(order, ListOrder::NameDesc) {
+                items.reverse();
+            }
         }
 
         let total = items.len() as u64;

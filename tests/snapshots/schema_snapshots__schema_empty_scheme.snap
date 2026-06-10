@@ -142,6 +142,14 @@ expression: "schemas_for(\"\")"
             "string",
             "null"
           ]
+        },
+        "view": {
+          "default": null,
+          "description": "Optional selector for what the items represent: `files` (the default)\nreturns individual note virtual paths; `dirs` returns the distinct\ndirectory virtual paths derived from the visible set — every ancestor\ndirectory of a visible note, deduplicated and deterministically ordered.\nThe `dirs` view honors `path_prefix`/`glob` and pagination and reads no\nnote contents.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [],

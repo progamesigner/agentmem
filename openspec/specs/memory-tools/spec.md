@@ -4,7 +4,7 @@
 TBD - created by archiving change build-agentmem-mcp-server. Update Purpose after archive.
 ## Requirements
 ### Requirement: `list_memory_notes` tool
-The system SHALL expose a `list_memory_notes` tool that returns a paginated set of virtual paths visible to a given scope, including both inside-agents-folder files belonging to that scope and outside-agents-folder files reachable under the active policy. The tool SHALL accept an optional `glob` argument that filters the visible set to entries whose clean, vault-root-relative virtual path matches the glob pattern; `glob` is applied as an in-memory filter over visible paths and SHALL NOT read note contents. When both `path_prefix` and `glob` are supplied, an entry SHALL be returned only if it satisfies both. An invalid glob pattern SHALL be rejected with `invalid_argument`. The tool SHALL accept an optional `order` argument selecting the result ordering by clean virtual path: `name_asc` (the default) or `name_desc`. Ordering SHALL be applied before pagination so `limit`/`cursor` page over the ordered set, and SHALL remain deterministic across calls with identical arguments. An unrecognized `order` value SHALL be rejected with `invalid_argument`.
+The system SHALL expose a `list_memory_notes` tool that returns a paginated set of virtual paths visible to a given scope, including both inside-agents-folder files belonging to that scope and outside-agents-folder files reachable under the active policy. The tool SHALL accept an optional `glob` argument that filters the visible set to entries whose clean, vault-root-relative virtual path matches the glob pattern; `glob` is applied as an in-memory filter over visible paths and SHALL NOT read note contents. When both `path_prefix` and `glob` are supplied, an entry SHALL be returned only if it satisfies both. An invalid glob pattern SHALL be rejected with `invalid_argument`. The tool SHALL accept an optional `order` argument selecting the result ordering by clean virtual path: `name_asc` (the default) or `name_desc`. Ordering SHALL be applied before pagination so `limit`/`cursor` page over the ordered set, and SHALL remain deterministic across calls with identical arguments. An unrecognized `order` value SHALL be rejected with `invalid_argument`. The tool SHALL accept an optional `view` argument selecting what the items represent: `files` (the default) returns individual note virtual paths; `dirs` returns the distinct directory virtual paths derived from the visible set — the deduplicated set of every ancestor directory of a visible note. The `dirs` view SHALL be derived purely from the visible paths without reading note contents, SHALL honor the `path_prefix` filter and pagination, and SHALL preserve deterministic ordering. An unrecognized `view` value SHALL be rejected with `invalid_argument`.
 
 #### Scenario: Lists own-scope and outside files under namespaced policy
 - **WHEN** the tool is invoked with the active scope, policy is `namespaced`, and the vault contains scope-owned files inside the agents folder plus human-authored files outside it
@@ -36,6 +36,18 @@ The system SHALL expose a `list_memory_notes` tool that returns a paginated set 
 
 #### Scenario: Unrecognized order value is rejected
 - **WHEN** the tool is invoked with an `order` value other than `name_asc` or `name_desc`
+- **THEN** the response is an MCP error with code `invalid_argument`
+
+#### Scenario: Default view lists files
+- **WHEN** the tool is invoked with `view` unset
+- **THEN** the items are individual note virtual paths, as before
+
+#### Scenario: Directory view lists distinct directories
+- **WHEN** the tool is invoked with `view="dirs"` and the visible set contains `Agents/diary/2026-06-10.md`, `Agents/topics/rust.md`, and `Agents/topics/python.md`
+- **THEN** the items are the distinct directory paths `Agents`, `Agents/diary`, and `Agents/topics` (no individual file paths), deduplicated and deterministically ordered
+
+#### Scenario: Unrecognized view value is rejected
+- **WHEN** the tool is invoked with a `view` value other than `files` or `dirs`
 - **THEN** the response is an MCP error with code `invalid_argument`
 
 #### Scenario: Other scopes' files are hidden

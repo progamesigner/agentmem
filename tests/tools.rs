@@ -394,6 +394,153 @@ fn list_name_desc_orders_before_pagination() {
 }
 
 #[test]
+fn list_default_view_returns_files() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items, vec!["Agents/topics/rust.md"]);
+}
+
+#[test]
+fn list_dirs_view_returns_distinct_directories() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for path in [
+        "Agents/diary/2026-06-10.md",
+        "Agents/topics/rust.md",
+        "Agents/topics/python.md",
+    ] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":"x"}),
+        )
+        .unwrap();
+    }
+
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","view":"dirs"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items, vec!["Agents", "Agents/diary", "Agents/topics"]);
+}
+
+#[test]
+fn list_dirs_view_honors_path_prefix() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for path in [
+        "Agents/topics/sub/rust.md",
+        "Agents/topics/python.md",
+        "Agents/diary/2026-06-10.md",
+    ] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":"x"}),
+        )
+        .unwrap();
+    }
+
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","view":"dirs","path_prefix":"topics"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items, vec!["Agents", "Agents/topics", "Agents/topics/sub"]);
+}
+
+#[test]
+fn list_invalid_view_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "list_memory_notes",
+            json!({"agent":"jarvis","user":"tony","view":"tree"}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn list_dirs_view_paginates() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for path in ["Agents/a/x.md", "Agents/b/x.md", "Agents/c/x.md"] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":"x"}),
+        )
+        .unwrap();
+    }
+
+    // Directory set is {Agents, Agents/a, Agents/b, Agents/c}; page by 2.
+    let page1 = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","view":"dirs","limit":2}),
+    ));
+    let items1: Vec<&str> = page1["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items1, vec!["Agents", "Agents/a"]);
+    let cursor = page1["next_cursor"]
+        .as_str()
+        .expect("cursor on first page")
+        .to_string();
+
+    let page2 = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","view":"dirs","limit":2,"cursor":cursor}),
+    ));
+    let items2: Vec<&str> = page2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items2, vec!["Agents/b", "Agents/c"]);
+    assert!(page2["next_cursor"].is_null());
+}
+
+#[test]
 fn list_hides_other_scopes() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);
