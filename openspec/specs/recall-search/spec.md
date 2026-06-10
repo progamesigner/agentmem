@@ -12,7 +12,11 @@ relevance value normalized to the range 0–1, and `snippets` are matching text
 fragments with surrounding context. The tool SHALL accept the active scope keys
 plus optional `query` (full-text), `filters` (frontmatter property predicates),
 `regex`, `path_prefix`, `limit`, and `cursor` arguments. At least one of `query`,
-`filters`, or `regex` MUST be supplied.
+`filters`, or `regex` MUST be supplied. The `query` and `regex` matchers SHALL be
+evaluated against each note's clean virtual path in addition to its body; a path
+match SHALL contribute to the relevance score with equal weight to a body match.
+When a note matches only on its path, it SHALL still be returned as a hit, with the
+matching path surfaced as a snippet.
 
 #### Scenario: Full-text recall returns ranked hits
 - **WHEN** the tool is invoked with `query="borrow checker"` for the active scope and
@@ -20,6 +24,17 @@ plus optional `query` (full-text), `filters` (frontmatter property predicates),
 - **THEN** the response contains a `hits` array of `{ path, score, snippets }` objects
   ordered by descending `score`, each `path` being a clean virtual path the agent can
   pass to `read_memory_note`
+
+#### Scenario: Recall matches the virtual path
+- **WHEN** the tool is invoked with `regex="2026-06-10"` (or `query="2026-06-10"`) and
+  the scope owns a note at `Agents/diary/2026-06-10.md` whose body does not contain
+  that string
+- **THEN** the note is returned as a hit, with the matching path surfaced as a snippet
+
+#### Scenario: Path and body matches are weighted equally
+- **WHEN** a query matches one note in its body and another note only in its path
+- **THEN** each occurrence counts the same toward the match-count score, so a single
+  path match and a single body match yield comparable raw scores before normalization
 
 #### Scenario: Empty recall is rejected
 - **WHEN** the tool is invoked with none of `query`, `filters`, or `regex` supplied

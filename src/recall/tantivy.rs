@@ -28,6 +28,7 @@ pub(crate) struct TantivyIndex {
     writer: IndexWriter,
     reader: IndexReader,
     path: Field,
+    path_text: Field,
     body: Field,
     props_json: Field,
 }
@@ -37,6 +38,9 @@ impl TantivyIndex {
         let mut builder = Schema::builder();
         // `path`: stored clean virtual path, and the unique key for upsert/delete.
         let path = builder.add_text_field("path", STRING | STORED);
+        // `path_text`: the same clean path, tokenized so `query`/`regex` match it
+        // like the body (the `path` STRING field stays the exact upsert/delete key).
+        let path_text = builder.add_text_field("path_text", TEXT);
         // `body`: frontmatter-stripped prose, BM25-indexed and stored for snippets.
         let body = builder.add_text_field("body", TEXT | STORED);
         // `props_json`: the serialized frontmatter properties, stored for post-filtering.
@@ -57,6 +61,7 @@ impl TantivyIndex {
             writer,
             reader,
             path,
+            path_text,
             body,
             props_json,
         }
@@ -72,10 +77,13 @@ impl TantivyIndex {
         (path, body, props)
     }
 
-    /// Build snippets: the BM25 fragment when available, else matching lines.
+    /// Build snippets: the BM25 fragment when available, else matching lines. When
+    /// the note matches only on its path (no body fragment or line), the clean path
+    /// is emitted as the single snippet, consistent with the simple backend.
     fn snippets(
         &self,
         doc: &TantivyDocument,
+        path: &str,
         body: &str,
         compiled: &CompiledQuery,
         generator: Option<&SnippetGenerator>,
@@ -95,9 +103,13 @@ impl TantivyIndex {
             if out.len() >= MAX_SNIPPETS {
                 break;
             }
-            let matched = match &compiled.regex {
-                Some(re) => re.is_match(line),
-                None => true,
+            // Only keep lines the query actually matches, so a path-only hit falls
+            // through to the path snippet below instead of emitting unrelated body
+            // lines (mirrors the simple backend's line selection).
+            let matched = match (&compiled.regex, &compiled.substring) {
+                (Some(re), _) => re.is_match(line),
+                (None, Some(needle)) => line.to_lowercase().contains(needle.as_str()),
+                (None, None) => true,
             };
             if matched {
                 let trimmed = line.trim();
@@ -105,6 +117,9 @@ impl TantivyIndex {
                     out.push(truncate(trimmed, MAX_SNIPPET_LEN));
                 }
             }
+        }
+        if out.is_empty() && path_matches(path, compiled) {
+            out.push(truncate(path, MAX_SNIPPET_LEN));
         }
         out
     }
@@ -120,6 +135,7 @@ impl BackendIndex for TantivyIndex {
         let props_json = serde_json::to_string(&parsed.props).unwrap_or_else(|_| "{}".to_string());
         let mut doc = TantivyDocument::default();
         doc.add_text(self.path, clean_path);
+        doc.add_text(self.path_text, clean_path);
         doc.add_text(self.body, &parsed.body);
         doc.add_text(self.props_json, &props_json);
         let _ = self.writer.add_document(doc);
@@ -143,7 +159,7 @@ impl BackendIndex for TantivyIndex {
 
         if let Some(text) = &compiled.raw_text {
             // BM25 over the narrowed candidate set, then regex/filter post-checks.
-            let parser = QueryParser::for_index(&self.index, vec![self.body]);
+            let parser = QueryParser::for_index(&self.index, vec![self.body, self.path_text]);
             let query = match parser.parse_query(text).or_else(|_| {
                 // Lenient retry as a quoted phrase for inputs with query syntax.
                 parser.parse_query(&format!("\"{}\"", text.replace('"', " ")))
@@ -161,10 +177,10 @@ impl BackendIndex for TantivyIndex {
                     continue;
                 };
                 let (path, body, props) = self.fields(&doc);
-                if !passes(&body, &props, compiled) {
+                if !passes(&path, &body, &props, compiled) {
                     continue;
                 }
-                let snippets = self.snippets(&doc, &body, compiled, generator.as_ref());
+                let snippets = self.snippets(&doc, &path, &body, compiled, generator.as_ref());
                 hits.push(RawHit {
                     clean_path: path,
                     raw_score: score,
@@ -189,14 +205,15 @@ impl BackendIndex for TantivyIndex {
                 };
                 let (path, body, props) = self.fields(&doc);
                 scanned = scanned.saturating_add(body.len());
-                if !passes(&body, &props, compiled) {
+                if !passes(&path, &body, &props, compiled) {
                     continue;
                 }
                 let raw_score = match &compiled.regex {
-                    Some(re) => re.find_iter(&body).count() as f32,
+                    // Count path and body matches with equal weight.
+                    Some(re) => (re.find_iter(&path).count() + re.find_iter(&body).count()) as f32,
                     None => 1.0,
                 };
-                let snippets = self.snippets(&doc, &body, compiled, None);
+                let snippets = self.snippets(&doc, &path, &body, compiled, None);
                 hits.push(RawHit {
                     clean_path: path,
                     raw_score,
@@ -209,15 +226,33 @@ impl BackendIndex for TantivyIndex {
     }
 }
 
-/// A document passes when its body matches the regex (if any) and its properties
-/// satisfy every filter.
-fn passes(body: &str, props: &serde_json::Value, compiled: &CompiledQuery) -> bool {
+/// A document passes when the regex (if any) matches its path or body, and its
+/// properties satisfy every filter.
+fn passes(path: &str, body: &str, props: &serde_json::Value, compiled: &CompiledQuery) -> bool {
     if let Some(re) = &compiled.regex
         && !re.is_match(body)
+        && !re.is_match(path)
     {
         return false;
     }
     compiled.filters.iter().all(|f| eval_filter(props, f))
+}
+
+/// Whether the supplied `query`/`regex` matchers match the clean virtual path. Used
+/// to decide whether to surface the path as a snippet for a path-only hit; the
+/// full-text check mirrors the substring semantics of the simple backend.
+fn path_matches(path: &str, compiled: &CompiledQuery) -> bool {
+    if let Some(needle) = &compiled.substring
+        && path.to_lowercase().contains(needle.as_str())
+    {
+        return true;
+    }
+    if let Some(re) = &compiled.regex
+        && re.is_match(path)
+    {
+        return true;
+    }
+    false
 }
 
 /// Evaluate one property predicate against the parsed frontmatter.
@@ -420,6 +455,32 @@ mod tests {
         let scan = idx.query(&compiled(None, Some(r"\bGIL\b"), vec![]), usize::MAX);
         assert_eq!(scan.hits.len(), 1);
         assert_eq!(scan.hits[0].clean_path, "Agents/topics/python.md");
+    }
+
+    #[test]
+    fn regex_matches_path_when_body_does_not() {
+        let mut idx = TantivyIndex::new();
+        idx.upsert("Agents/diary/2026-06-10.md", "Nothing dated in the body.");
+        idx.flush();
+        let scan = idx.query(&compiled(None, Some(r"2026-06-10"), vec![]), usize::MAX);
+        assert_eq!(scan.hits.len(), 1);
+        assert_eq!(scan.hits[0].clean_path, "Agents/diary/2026-06-10.md");
+        assert_eq!(scan.hits[0].snippets, vec!["Agents/diary/2026-06-10.md"]);
+    }
+
+    #[test]
+    fn full_text_matches_path_when_body_does_not() {
+        let mut idx = TantivyIndex::new();
+        // "kotlin" appears only in the path, not the body.
+        idx.upsert(
+            "Agents/topics/kotlin.md",
+            "Coroutines structure concurrency.",
+        );
+        idx.flush();
+        let scan = idx.query(&compiled(Some("kotlin"), None, vec![]), usize::MAX);
+        assert_eq!(scan.hits.len(), 1);
+        assert_eq!(scan.hits[0].clean_path, "Agents/topics/kotlin.md");
+        assert_eq!(scan.hits[0].snippets, vec!["Agents/topics/kotlin.md"]);
     }
 
     #[test]

@@ -705,6 +705,17 @@ mod tests {
         }
     }
 
+    fn regex_query(pattern: &str) -> RecallQuery {
+        RecallQuery {
+            text: None,
+            regex: Some(pattern.to_string()),
+            filters: Vec::new(),
+            path_prefix: None,
+            limit: 100,
+            offset: 0,
+        }
+    }
+
     #[test]
     fn warm_makes_engine_ready() {
         let (_tmp, engine) = engine();
@@ -839,5 +850,70 @@ mod tests {
             .unwrap();
         let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
         assert!(paths.contains(&"Agents/topics/async.md"));
+    }
+
+    #[test]
+    fn recall_matches_own_path_end_to_end() {
+        let (_tmp, engine) = engine();
+        // "rust" appears only in the path Agents/topics/rust.md, not its body.
+        let results = engine
+            .recall("jarvis.tony", BOTH, &regex_query("rust"))
+            .unwrap();
+        let hit = results
+            .hits
+            .iter()
+            .find(|h| h.path == "Agents/topics/rust.md")
+            .expect("path-only hit");
+        assert!(hit.snippets.iter().any(|s| s == "Agents/topics/rust.md"));
+    }
+
+    #[test]
+    fn path_match_never_leaks_another_scope() {
+        let (_tmp, engine) = engine();
+        // "secret" matches jarvis.sam's path (Agents/topics/secret.md) and body, but
+        // sam lives in a separate index and must never surface for jarvis.tony.
+        let results = engine
+            .recall("jarvis.tony", BOTH, &regex_query("secret"))
+            .unwrap();
+        for hit in &results.hits {
+            assert!(!hit.path.contains("secret"), "leaked path: {}", hit.path);
+        }
+    }
+
+    #[cfg(feature = "recall-tantivy")]
+    #[test]
+    fn tantivy_matches_path_end_to_end() {
+        let tmp = TempDir::new().unwrap();
+        // The date appears only in the path, not the body.
+        tmp.child("Agents/jarvis.tony/diary/2026-06-10.jarvis.tony.md")
+            .write_str("Nothing dated in the body.")
+            .unwrap();
+        let resolver = PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            camino::Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        );
+        let storage = Arc::new(Storage::new(resolver, true, false, &[]));
+        let config = RecallConfig {
+            backend: RecallBackendKind::Tantivy,
+            watch_debounce: std::time::Duration::from_millis(0),
+            regex_scan_byte_cap: usize::MAX,
+            max_resident_scopes: 256,
+            freshness: std::time::Duration::from_millis(0),
+        };
+        let engine = RecallEngine::new(storage, config).unwrap();
+        let results = engine
+            .recall("jarvis.tony", BOTH, &regex_query("2026-06-10"))
+            .unwrap();
+        let hit = results
+            .hits
+            .iter()
+            .find(|h| h.path == "Agents/diary/2026-06-10.md")
+            .expect("path-only hit");
+        assert!(
+            hit.snippets
+                .iter()
+                .any(|s| s == "Agents/diary/2026-06-10.md")
+        );
     }
 }
