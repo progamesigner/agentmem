@@ -289,6 +289,111 @@ fn list_glob_preserves_ordering_and_pagination() {
 }
 
 #[test]
+fn list_default_order_is_ascending() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for name in ["c", "a", "b"] {
+        call(&tb, "write_memory_note", json!({"agent":"jarvis","user":"tony","path":format!("Agents/topics/{name}.md"),"content":"x"})).unwrap();
+    }
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        items,
+        vec![
+            "Agents/topics/a.md",
+            "Agents/topics/b.md",
+            "Agents/topics/c.md"
+        ]
+    );
+}
+
+#[test]
+fn list_name_desc_returns_descending_order() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for name in ["2026-01-01", "2026-06-10"] {
+        call(&tb, "write_memory_note", json!({"agent":"jarvis","user":"tony","path":format!("Agents/diary/{name}.md"),"content":"x"})).unwrap();
+    }
+    let body = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","order":"name_desc"}),
+    ));
+    let items: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        items,
+        vec!["Agents/diary/2026-06-10.md", "Agents/diary/2026-01-01.md"]
+    );
+}
+
+#[test]
+fn list_invalid_order_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "list_memory_notes",
+            json!({"agent":"jarvis","user":"tony","order":"recency_desc"}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn list_name_desc_orders_before_pagination() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for name in ["a", "b", "c"] {
+        call(&tb, "write_memory_note", json!({"agent":"jarvis","user":"tony","path":format!("Agents/topics/{name}.md"),"content":"x"})).unwrap();
+    }
+    let page1 = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","order":"name_desc","limit":2}),
+    ));
+    let items1: Vec<&str> = page1["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items1, vec!["Agents/topics/c.md", "Agents/topics/b.md"]);
+    let cursor = page1["next_cursor"]
+        .as_str()
+        .expect("cursor on first page")
+        .to_string();
+
+    let page2 = structured(call(
+        &tb,
+        "list_memory_notes",
+        json!({"agent":"jarvis","user":"tony","order":"name_desc","limit":2,"cursor":cursor}),
+    ));
+    let items2: Vec<&str> = page2["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(items2, vec!["Agents/topics/a.md"]);
+    assert!(page2["next_cursor"].is_null());
+}
+
+#[test]
 fn list_hides_other_scopes() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);

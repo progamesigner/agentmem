@@ -60,12 +60,25 @@ struct ListFields {
     /// match). Filters paths only; reads no note contents.
     #[serde(default)]
     glob: Option<String>,
+    /// Optional ordering of results by clean virtual path: `name_asc` (the
+    /// default) returns ascending path order; `name_desc` returns descending.
+    /// Ordering is applied before pagination, so `limit`/`cursor` page over the
+    /// ordered set.
+    #[serde(default)]
+    order: Option<String>,
     /// Maximum number of entries to return (default 200, maximum 1000).
     #[serde(default)]
     limit: Option<u64>,
     /// Opaque pagination cursor returned by a previous call.
     #[serde(default)]
     cursor: Option<String>,
+}
+
+/// Result ordering for `list_memory_notes`, by clean virtual path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListOrder {
+    NameAsc,
+    NameDesc,
 }
 
 #[derive(JsonSchema)]
@@ -459,7 +472,18 @@ impl Toolbox {
     // --- handlers ---
 
     fn list_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["path_prefix", "glob", "limit", "cursor"])?;
+        let scope =
+            self.resolve_scope(args, &["path_prefix", "glob", "order", "limit", "cursor"])?;
+
+        let order = match opt_str(args, "order")?.as_deref() {
+            None | Some("name_asc") => ListOrder::NameAsc,
+            Some("name_desc") => ListOrder::NameDesc,
+            Some(other) => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!("order must be \"name_asc\" or \"name_desc\", got {other:?}"),
+                });
+            }
+        };
 
         let path_prefix = opt_str(args, "path_prefix")?;
         let glob = match opt_str(args, "glob")? {
@@ -493,6 +517,10 @@ impl Toolbox {
             .into_iter()
             .map(|p| p.as_str().to_string())
             .collect();
+
+        if matches!(order, ListOrder::NameDesc) {
+            items.reverse();
+        }
 
         if let Some(prefix) = &path_prefix {
             let agents = self.storage.resolver().agents_dir();

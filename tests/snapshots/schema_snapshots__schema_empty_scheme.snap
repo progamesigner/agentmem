@@ -127,6 +127,14 @@ expression: "schemas_for(\"\")"
             "null"
           ]
         },
+        "order": {
+          "default": null,
+          "description": "Optional ordering of results by clean virtual path: `name_asc` (the\ndefault) returns ascending path order; `name_desc` returns descending.\nOrdering is applied before pagination, so `limit`/`cursor` page over the\nordered set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path_prefix": {
           "default": null,
           "description": "Optional virtual-path prefix, relative to the agents folder, to filter by.",

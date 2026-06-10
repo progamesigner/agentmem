@@ -4,7 +4,7 @@
 TBD - created by archiving change build-agentmem-mcp-server. Update Purpose after archive.
 ## Requirements
 ### Requirement: `list_memory_notes` tool
-The system SHALL expose a `list_memory_notes` tool that returns a paginated set of virtual paths visible to a given scope, including both inside-agents-folder files belonging to that scope and outside-agents-folder files reachable under the active policy. The tool SHALL accept an optional `glob` argument that filters the visible set to entries whose clean, vault-root-relative virtual path matches the glob pattern; `glob` is applied as an in-memory filter over visible paths and SHALL NOT read note contents. When both `path_prefix` and `glob` are supplied, an entry SHALL be returned only if it satisfies both. An invalid glob pattern SHALL be rejected with `invalid_argument`.
+The system SHALL expose a `list_memory_notes` tool that returns a paginated set of virtual paths visible to a given scope, including both inside-agents-folder files belonging to that scope and outside-agents-folder files reachable under the active policy. The tool SHALL accept an optional `glob` argument that filters the visible set to entries whose clean, vault-root-relative virtual path matches the glob pattern; `glob` is applied as an in-memory filter over visible paths and SHALL NOT read note contents. When both `path_prefix` and `glob` are supplied, an entry SHALL be returned only if it satisfies both. An invalid glob pattern SHALL be rejected with `invalid_argument`. The tool SHALL accept an optional `order` argument selecting the result ordering by clean virtual path: `name_asc` (the default) or `name_desc`. Ordering SHALL be applied before pagination so `limit`/`cursor` page over the ordered set, and SHALL remain deterministic across calls with identical arguments. An unrecognized `order` value SHALL be rejected with `invalid_argument`.
 
 #### Scenario: Lists own-scope and outside files under namespaced policy
 - **WHEN** the tool is invoked with the active scope, policy is `namespaced`, and the vault contains scope-owned files inside the agents folder plus human-authored files outside it
@@ -24,6 +24,18 @@ The system SHALL expose a `list_memory_notes` tool that returns a paginated set 
 
 #### Scenario: Invalid glob is rejected
 - **WHEN** the tool is invoked with a `glob` argument that is not a valid glob pattern
+- **THEN** the response is an MCP error with code `invalid_argument`
+
+#### Scenario: Default ordering is ascending by path
+- **WHEN** the tool is invoked with `order` unset
+- **THEN** entries are returned in ascending clean-virtual-path order
+
+#### Scenario: Descending order by path
+- **WHEN** the tool is invoked with `order="name_desc"` and the visible set contains `Agents/diary/2026-01-01.md` and `Agents/diary/2026-06-10.md`
+- **THEN** `Agents/diary/2026-06-10.md` is returned before `Agents/diary/2026-01-01.md`
+
+#### Scenario: Unrecognized order value is rejected
+- **WHEN** the tool is invoked with an `order` value other than `name_asc` or `name_desc`
 - **THEN** the response is an MCP error with code `invalid_argument`
 
 #### Scenario: Other scopes' files are hidden
