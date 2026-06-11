@@ -745,6 +745,187 @@ fn read_hidden_is_path_not_permitted() {
     assert_code(res, "path_not_permitted");
 }
 
+// --- read_memory_note backlinks ---
+
+#[test]
+fn read_backlinks_for_wikilink_and_markdown_referrers() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for (path, content) in [
+        ("Agents/topics/rust.md", "the target"),
+        ("Agents/diary/2026-06-10.md", "worked on [[rust]] today"),
+        (
+            "Agents/notes/memo.md",
+            "see [the Rust note](topics/rust.md)",
+        ),
+        ("Agents/notes/unrelated.md", "no links"),
+    ] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":content}),
+        )
+        .unwrap();
+    }
+
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":true}),
+    ));
+    assert_eq!(body["content"], "the target");
+    assert_eq!(
+        body["backlinks"],
+        json!(["Agents/diary/2026-06-10.md", "Agents/notes/memo.md"])
+    );
+}
+
+#[test]
+fn read_backlinks_lists_a_referring_note_once() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md",
+               "content":"[[rust]], again [[rust|aliased]], embedded ![[rust]]"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":true}),
+    ));
+    assert_eq!(body["backlinks"], json!(["Agents/notes/memo.md"]));
+}
+
+#[test]
+fn read_backlinks_ordering_is_deterministic() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+    for name in ["c", "a", "b"] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":format!("Agents/notes/{name}.md"),"content":"[[rust]]"}),
+        )
+        .unwrap();
+    }
+
+    let args =
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":true});
+    let first = structured(call(&tb, "read_memory_note", args.clone()));
+    assert_eq!(
+        first["backlinks"],
+        json!([
+            "Agents/notes/a.md",
+            "Agents/notes/b.md",
+            "Agents/notes/c.md"
+        ])
+    );
+    let second = structured(call(&tb, "read_memory_note", args));
+    assert_eq!(first["backlinks"], second["backlinks"]);
+}
+
+#[test]
+fn read_backlinks_never_scans_other_scopes() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    write_outside(&tmp, "Actions/release.md", "shared target");
+    // Another scope links to the shared note; the caller's own note does too.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"sam","path":"Agents/notes/sam.md","content":"[[release]]"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/tony.md","content":"[[release]]"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Actions/release.md","backlinks":true}),
+    ));
+    assert_eq!(body["backlinks"], json!(["Agents/notes/tony.md"]));
+}
+
+#[test]
+fn read_backlinks_scoped_policy_excludes_shared_referrers() {
+    let tmp = TempDir::new().unwrap();
+    // Shared note links to a name only resolvable as the caller's own note.
+    write_outside(&tmp, "Actions/pointer.md", "[[rust]]");
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Scoped);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","content":"[[rust]]"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":true}),
+    ));
+    assert_eq!(body["backlinks"], json!(["Agents/notes/memo.md"]));
+}
+
+#[test]
+fn read_without_backlinks_flag_is_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","content":"[[rust]]"}),
+    )
+    .unwrap();
+
+    let absent = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md"}),
+    ));
+    assert_eq!(absent, json!({"content": "x"}));
+
+    let explicit_false = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":false}),
+    ));
+    assert_eq!(explicit_false, json!({"content": "x"}));
+}
+
 // --- write_memory_note ---
 
 #[test]

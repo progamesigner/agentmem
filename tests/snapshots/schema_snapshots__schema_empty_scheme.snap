@@ -166,10 +166,17 @@ expression: "schemas_for(\"\")"
     }
   },
   "read_memory_note": {
-    "description": "Read the UTF-8 contents of a single memory note by its virtual path.",
+    "description": "Read the UTF-8 contents of a single memory note by its virtual path. Set `backlinks` to also return the visible notes whose links resolve to it.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "backlinks": {
+          "description": "When `true`, the structured result additionally carries a `backlinks`\narray: the clean virtual path of every visible note containing at least\none link that resolves to this note, deduplicated and sorted ascending.\nAbsent or `false` leaves the response unchanged.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "path": {
           "description": "The virtual path of the note, relative to the vault root.",
           "type": "string"

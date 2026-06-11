@@ -105,6 +105,18 @@ struct PathFields {
 
 #[derive(JsonSchema)]
 #[allow(dead_code)]
+struct ReadFields {
+    /// The virtual path of the note, relative to the vault root.
+    path: String,
+    /// When `true`, the structured result additionally carries a `backlinks`
+    /// array: the clean virtual path of every visible note containing at least
+    /// one link that resolves to this note, deduplicated and sorted ascending.
+    /// Absent or `false` leaves the response unchanged.
+    backlinks: Option<bool>,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
 struct WriteFields {
     /// The virtual path of the note, relative to the vault root.
     path: String,
@@ -600,8 +612,9 @@ impl Toolbox {
     }
 
     fn read_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["path"])?;
+        let scope = self.resolve_scope(args, &["path", "backlinks"])?;
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
+        let want_backlinks = opt_bool(args, "backlinks")?.unwrap_or(false);
         let resolver = self.storage.resolver();
         let region = resolver.detect_region(&vpath);
         self.policy
@@ -614,9 +627,39 @@ impl Toolbox {
             });
         }
         let content = self.strip_links_for(&scope, &self.storage.read(&physical)?);
-        let mut result = CallToolResult::success(vec![Content::text(content.clone())]);
-        result.structured_content = Some(json!({ "content": content }));
+        let mut structured = json!({ "content": &content });
+        if want_backlinks {
+            structured["backlinks"] = json!(self.collect_backlinks(&scope, &vpath)?);
+        }
+        let mut result = CallToolResult::success(vec![Content::text(content)]);
+        result.structured_content = Some(structured);
         Ok(result)
+    }
+
+    /// The clean virtual paths of every visible note containing at least one
+    /// link that resolves to `vpath`, deduplicated and sorted ascending. Notes
+    /// that cannot be read (raced deletion, non-UTF-8) are skipped — they cannot
+    /// contain resolvable links.
+    fn collect_backlinks(
+        &self,
+        scope: &str,
+        vpath: &VirtualPath,
+    ) -> Result<Vec<String>, AgentmemError> {
+        let target_clean = vpath.as_str().strip_suffix(".md").unwrap_or(vpath.as_str());
+        let resolver = self.storage.resolver();
+        let regions = self.policy.list_visible_regions(self.scheme().is_empty());
+        let index = self.storage.build_link_index(scope, &regions)?;
+        let mut backlinks = BTreeSet::new();
+        for referrer in self.storage.list_visible(scope, &regions)? {
+            let physical = resolver.resolve(scope, &referrer)?;
+            let Ok(content) = self.storage.read(&physical) else {
+                continue;
+            };
+            if crate::wikilink::references_to(&content, target_clean, scope, resolver, &index) {
+                backlinks.insert(referrer.as_str().to_string());
+            }
+        }
+        Ok(backlinks.into_iter().collect())
     }
 
     fn write_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
@@ -963,6 +1006,16 @@ fn opt_str(args: &JsonObject, key: &str) -> Result<Option<String>, AgentmemError
     }
 }
 
+fn opt_bool(args: &JsonObject, key: &str) -> Result<Option<bool>, AgentmemError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(AgentmemError::InvalidArgument {
+            message: format!("argument '{key}' must be a boolean"),
+        }),
+    }
+}
+
 fn opt_u64(args: &JsonObject, key: &str) -> Result<Option<u64>, AgentmemError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1041,8 +1094,8 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
         ),
         tool(
             "read_memory_note",
-            "Read the UTF-8 contents of a single memory note by its virtual path.",
-            merge_schema(scheme, fields_schema::<PathFields>()),
+            "Read the UTF-8 contents of a single memory note by its virtual path. Set `backlinks` to also return the visible notes whose links resolve to it.",
+            merge_schema(scheme, fields_schema::<ReadFields>()),
         ),
         tool(
             "write_memory_note",

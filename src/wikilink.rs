@@ -26,7 +26,7 @@ use crate::storage::{LinkEntry, LinkIndex};
 
 /// Which syntactic form a link target came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LinkKind {
+pub(crate) enum LinkKind {
     /// `[[target]]`, `[[target|alias]]`, `[[target#heading]]`, or `![[target]]`.
     /// The target is a basename (no `.md` extension).
     Wikilink,
@@ -93,17 +93,56 @@ pub fn expand_links(
 pub fn strip_links(content: &str, rendered_scope: &str, resolver: &PathResolver) -> String {
     // strip_links never errors: an unrecognised target is simply left as-is.
     rewrite_links(content, |kind, target| {
-        let stripped = match kind {
-            // Wikilinks store the suffixed basename/qualified name directly.
-            LinkKind::Wikilink => strip_suffix_from_link_target(target, rendered_scope),
-            // Markdown links store the vault-root-relative physical path; reverse it
-            // via the resolver and drop the agents-folder prefix to the clean form.
-            LinkKind::Markdown => strip_markdown_physical(target, rendered_scope, resolver),
-        };
-        Ok::<_, AgentmemError>(stripped)
+        Ok::<_, AgentmemError>(strip_target(kind, target, rendered_scope, resolver))
     })
     // The closure is infallible, so unwrap is safe.
     .unwrap_or_else(|_| content.to_string())
+}
+
+/// Strip the caller's suffix from one stored link target, per kind. `None` when
+/// the target does not carry the caller's suffix (shared and dangling targets
+/// are stored clean).
+fn strip_target(
+    kind: LinkKind,
+    target: &str,
+    rendered_scope: &str,
+    resolver: &PathResolver,
+) -> Option<String> {
+    match kind {
+        // Wikilinks store the suffixed basename/qualified name directly.
+        LinkKind::Wikilink => strip_suffix_from_link_target(target, rendered_scope),
+        // Markdown links store the vault-root-relative physical path; reverse it
+        // via the resolver and drop the agents-folder prefix to the clean form.
+        LinkKind::Markdown => strip_markdown_physical(target, rendered_scope, resolver),
+    }
+}
+
+/// Whether `content` (in its stored, on-disk form) contains at least one link
+/// that forward-resolves to the note at `target_clean_path` (its clean,
+/// vault-root-relative path with the `.md` extension stripped). Each collected
+/// target is stripped of the caller's suffix and resolved against `index` with
+/// the same rules as the forward transform, so backlinks are the exact inverse
+/// of link navigation: a dangling link counts toward nothing, and an ambiguous
+/// basename counts only toward the entry forward resolution selects.
+pub(crate) fn references_to(
+    content: &str,
+    target_clean_path: &str,
+    rendered_scope: &str,
+    resolver: &PathResolver,
+    index: &LinkIndex,
+) -> bool {
+    let mut found = false;
+    // Collector mode: the callback never rewrites and never errors.
+    let _ = rewrite_links(content, |kind, target| {
+        if !found {
+            let stripped = strip_target(kind, target, rendered_scope, resolver);
+            let clean = stripped.as_deref().unwrap_or(target);
+            found = resolve_target(index, kind, clean)
+                .is_some_and(|entry| entry.clean_path == target_clean_path);
+        }
+        Ok::<_, AgentmemError>(None)
+    });
+    found
 }
 
 /// Reverse the own-scope markdown physical form back to the agents-folder-relative
@@ -132,7 +171,11 @@ fn strip_markdown_physical(
 /// and their basenames agree. A unique match wins; ties prefer the caller's own
 /// scope, then the lexicographically smallest clean path. Returns `None` when no
 /// visible note matches (a dangling link).
-fn resolve_target<'a>(index: &'a LinkIndex, kind: LinkKind, target: &str) -> Option<&'a LinkEntry> {
+pub(crate) fn resolve_target<'a>(
+    index: &'a LinkIndex,
+    kind: LinkKind,
+    target: &str,
+) -> Option<&'a LinkEntry> {
     let clean = match kind {
         LinkKind::Markdown => target.strip_suffix(".md").unwrap_or(target),
         LinkKind::Wikilink => target,
@@ -529,6 +572,115 @@ mod tests {
         assert!(expanded.contains("(Agents/jarvis.tony/topics/guide.jarvis.tony.md)"));
         // ...but stripping it recovers exactly the clean content.
         assert_eq!(strip_links(&expanded, "jarvis.tony", &r), clean);
+    }
+
+    // --- references_to (backlink reverse resolution) ---
+
+    #[test]
+    fn references_to_interprets_suffixed_on_disk_forms() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        // The stored own-scope form of `[[rust]]`.
+        assert!(references_to(
+            "see [[rust.jarvis.tony]]",
+            "Agents/topics/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+        // The clean form (as a shared file would store it) resolves identically.
+        assert!(references_to(
+            "see [[rust]]",
+            "Agents/topics/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+    }
+
+    #[test]
+    fn references_to_counts_every_link_form() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let stored_forms = [
+            "[[rust.jarvis.tony|the Rust note]]",
+            "[[rust.jarvis.tony#install]]",
+            "![[rust.jarvis.tony]]",
+            // The stored own-scope markdown form: vault-root-relative physical path.
+            "[doc](Agents/jarvis.tony/topics/rust.jarvis.tony.md)",
+        ];
+        for content in stored_forms {
+            assert!(
+                references_to(content, "Agents/topics/rust", "jarvis.tony", &r, &idx),
+                "{content} should count as a backlink"
+            );
+        }
+        assert!(!references_to(
+            "no links here",
+            "Agents/topics/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+    }
+
+    #[test]
+    fn references_to_ambiguous_basename_follows_forward_tie_break() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[
+            ("Agents/topics/rust.md", Region::InsideAgentsFolder),
+            ("Lang/rust.md", Region::OutsideAgentsFolder),
+        ]);
+        // `[[rust]]` forward-resolves to the own-scope entry (own scope preferred),
+        // so it is a backlink only for that entry.
+        let forward = resolve_target(&idx, LinkKind::Wikilink, "rust").unwrap();
+        assert_eq!(forward.clean_path, "Agents/topics/rust");
+        assert!(references_to(
+            "[[rust]]",
+            "Agents/topics/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+        assert!(!references_to(
+            "[[rust]]",
+            "Lang/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+        // A qualified link to the shared entry counts only for it.
+        assert!(references_to(
+            "[[Lang/rust]]",
+            "Lang/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+        assert!(!references_to(
+            "[[Lang/rust]]",
+            "Agents/topics/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
+    }
+
+    #[test]
+    fn references_to_dangling_links_resolve_to_nothing() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        assert!(!references_to(
+            "[[ghost]] and [g](ghost.md)",
+            "Agents/topics/rust",
+            "jarvis.tony",
+            &r,
+            &idx,
+        ));
     }
 
     #[test]
