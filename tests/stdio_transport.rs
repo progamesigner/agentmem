@@ -31,10 +31,10 @@ async fn stdio_initialize_list_and_roundtrip() {
     // initialize handshake populated peer info.
     assert!(service.peer_info().is_some());
 
-    // tools/list returns the nine core tools plus recall_memory_notes, which the
+    // tools/list returns the ten core tools plus recall_memory_notes, which the
     // default `simple` recall backend enables.
     let tools = service.list_tools(Default::default()).await.unwrap();
-    assert_eq!(tools.tools.len(), 10);
+    assert_eq!(tools.tools.len(), 11);
     assert!(tools.tools.iter().any(|t| t.name == "recall_memory_notes"));
 
     // write then read a memory note round-trip.

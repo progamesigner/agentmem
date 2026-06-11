@@ -21,6 +21,7 @@ pub enum ErrorCode {
     WriteDenied,
     MissingScope,
     NotFound,
+    DestinationExists,
     EditSearchNotFound,
     EditSearchAmbiguous,
     InvalidArgument,
@@ -38,6 +39,7 @@ impl ErrorCode {
             ErrorCode::WriteDenied => "write_denied",
             ErrorCode::MissingScope => "missing_scope",
             ErrorCode::NotFound => "not_found",
+            ErrorCode::DestinationExists => "destination_exists",
             ErrorCode::EditSearchNotFound => "edit_search_not_found",
             ErrorCode::EditSearchAmbiguous => "edit_search_ambiguous",
             ErrorCode::InvalidArgument => "invalid_argument",
@@ -89,6 +91,11 @@ pub enum AgentmemError {
     #[error("not found: '{virtual_path}'")]
     NotFound { virtual_path: String },
 
+    /// A rename targeted a destination at which a note already exists. The agent
+    /// should pick another name rather than treat this as a bad argument.
+    #[error("destination '{virtual_path}' already exists; pick another name")]
+    DestinationExists { virtual_path: String },
+
     #[error("edit failed: the search string was not found in the target file")]
     EditSearchNotFound,
 
@@ -131,6 +138,7 @@ impl AgentmemError {
             AgentmemError::CrossScopeLink { .. } => ErrorCode::WriteDenied,
             AgentmemError::MissingScope { .. } => ErrorCode::MissingScope,
             AgentmemError::NotFound { .. } => ErrorCode::NotFound,
+            AgentmemError::DestinationExists { .. } => ErrorCode::DestinationExists,
             AgentmemError::EditSearchNotFound => ErrorCode::EditSearchNotFound,
             AgentmemError::EditSearchAmbiguous { .. } => ErrorCode::EditSearchAmbiguous,
             AgentmemError::InvalidArgument { .. } => ErrorCode::InvalidArgument,
@@ -177,6 +185,7 @@ impl From<AgentmemError> for McpError {
             ErrorCode::MissingScope
             | ErrorCode::InvalidArgument
             | ErrorCode::Unsupported
+            | ErrorCode::DestinationExists
             | ErrorCode::EditSearchNotFound
             | ErrorCode::EditSearchAmbiguous => McpError::invalid_params(err.to_string(), data),
             ErrorCode::NotFound => McpError::resource_not_found(err.to_string(), data),
@@ -200,6 +209,7 @@ mod tests {
         assert_eq!(ErrorCode::WriteDenied.as_str(), "write_denied");
         assert_eq!(ErrorCode::MissingScope.as_str(), "missing_scope");
         assert_eq!(ErrorCode::NotFound.as_str(), "not_found");
+        assert_eq!(ErrorCode::DestinationExists.as_str(), "destination_exists");
         assert_eq!(
             ErrorCode::EditSearchNotFound.as_str(),
             "edit_search_not_found"

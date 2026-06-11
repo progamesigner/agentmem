@@ -50,6 +50,36 @@ fn recall_toolbox(tmp: &TempDir) -> Toolbox {
     )
 }
 
+/// A recall toolbox whose index never goes stale on its own (hour-long
+/// freshness and debounce, no watcher started): after the first build, only the
+/// server's own `recall_on_write` notifications can update it.
+fn frozen_recall_toolbox(tmp: &TempDir) -> Toolbox {
+    let mk = || {
+        PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        )
+    };
+    let storage = Storage::new(mk(), true, false, &[]);
+    let config = RecallConfig {
+        backend: RecallBackendKind::Simple,
+        watch_debounce: Duration::from_secs(3600),
+        regex_scan_byte_cap: usize::MAX,
+        max_resident_scopes: 256,
+        freshness: Duration::from_secs(3600),
+    };
+    let recall =
+        RecallEngine::new(Arc::new(Storage::new(mk(), true, false, &[])), config).map(Arc::new);
+    Toolbox::new(
+        storage,
+        Policy::Namespaced,
+        Tz::UTC,
+        tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        recall,
+    )
+}
+
 fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox {
     let resolver = PathResolver::new(
         tmp.path().canonicalize().unwrap(),
@@ -924,6 +954,365 @@ fn read_without_backlinks_flag_is_unchanged() {
         json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":false}),
     ));
     assert_eq!(explicit_false, json!({"content": "x"}));
+}
+
+// --- rename_memory_note ---
+
+/// Read a note's clean content via the tool.
+fn read_clean(tb: &Toolbox, path: &str) -> String {
+    structured(call(
+        tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":path}),
+    ))["content"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn rename_rewrites_wikilink_and_markdown_referrers() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for (path, content) in [
+        ("Agents/topics/rust.md", "the rust note"),
+        (
+            "Agents/diary/2026-06-10.md",
+            "worked on [[rust]], [[rust#install|the note]], and ![[rust]]",
+        ),
+        (
+            "Agents/notes/memo.md",
+            "see [the Rust note](topics/rust.md)",
+        ),
+        ("Agents/notes/unrelated.md", "no links"),
+    ] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":content}),
+        )
+        .unwrap();
+    }
+
+    let body = structured(call(
+        &tb,
+        "rename_memory_note",
+        json!({"agent":"jarvis","user":"tony",
+               "path":"Agents/topics/rust.md","new_path":"Agents/topics/rust-lang.md"}),
+    ));
+    assert_eq!(
+        body,
+        json!({
+            "renamed": true,
+            "path": "Agents/topics/rust.md",
+            "new_path": "Agents/topics/rust-lang.md",
+            "notes_rewritten": 2,
+        })
+    );
+
+    // The destination carries the content; the source is gone.
+    assert_eq!(
+        read_clean(&tb, "Agents/topics/rust-lang.md"),
+        "the rust note"
+    );
+    assert_code(
+        call(
+            &tb,
+            "read_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md"}),
+        ),
+        "not_found",
+    );
+
+    // Referring notes round-trip to the clean new target, decorations preserved.
+    assert_eq!(
+        read_clean(&tb, "Agents/diary/2026-06-10.md"),
+        "worked on [[rust-lang]], [[rust-lang#install|the note]], and ![[rust-lang]]"
+    );
+    assert_eq!(
+        read_clean(&tb, "Agents/notes/memo.md"),
+        "see [the Rust note](topics/rust-lang.md)"
+    );
+    assert_eq!(read_clean(&tb, "Agents/notes/unrelated.md"), "no links");
+
+    // On disk the rewritten links carry the suffixed/physical forms.
+    let diary_raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/diary/2026-06-10.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert!(diary_raw.contains("[[rust-lang.jarvis.tony]]"));
+    let memo_raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/notes/memo.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert!(memo_raw.contains("(Agents/jarvis.tony/topics/rust-lang.jarvis.tony.md)"));
+}
+
+#[test]
+fn rename_moves_self_references() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    // Write once so the note exists, then again so its self-links resolve and
+    // are stored in the suffixed on-disk form.
+    for content in ["seed", "I am [[rust]] and [me](topics/rust.md)"] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":content}),
+        )
+        .unwrap();
+    }
+
+    let body = structured(call(
+        &tb,
+        "rename_memory_note",
+        json!({"agent":"jarvis","user":"tony",
+               "path":"Agents/topics/rust.md","new_path":"Agents/topics/rust-lang.md"}),
+    ));
+    assert_eq!(body["notes_rewritten"], 0);
+
+    // The moved note's own links point at the destination — the old name
+    // neither dangles nor persists.
+    assert_eq!(
+        read_clean(&tb, "Agents/topics/rust-lang.md"),
+        "I am [[rust-lang]] and [me](topics/rust-lang.md)"
+    );
+}
+
+#[test]
+fn rename_onto_existing_note_is_destination_exists() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for (path, content) in [
+        ("Agents/notes/a.md", "alpha"),
+        ("Agents/notes/b.md", "beta"),
+    ] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":content}),
+        )
+        .unwrap();
+    }
+
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Agents/notes/a.md","new_path":"Agents/notes/b.md"}),
+        ),
+        "destination_exists",
+    );
+    // Neither note was modified.
+    assert_eq!(read_clean(&tb, "Agents/notes/a.md"), "alpha");
+    assert_eq!(read_clean(&tb, "Agents/notes/b.md"), "beta");
+}
+
+#[test]
+fn rename_rejects_root_reserved_paths_on_both_ends() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/a.md","content":"x"}),
+    )
+    .unwrap();
+
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Agents/MEMORY.md","new_path":"Agents/topics/m.md"}),
+        ),
+        "path_not_permitted",
+    );
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Agents/topics/a.md","new_path":"Agents/HEARTBEAT.md"}),
+        ),
+        "path_not_permitted",
+    );
+    assert_eq!(read_clean(&tb, "Agents/topics/a.md"), "x");
+}
+
+#[test]
+fn rename_outside_agents_folder_denied_under_namespaced() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    write_outside(&tmp, "Actions/release.md", "shared");
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/a.md","content":"x"}),
+    )
+    .unwrap();
+
+    // Source outside the agents folder.
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Actions/release.md","new_path":"Actions/new.md"}),
+        ),
+        "write_denied",
+    );
+    // Destination outside the agents folder.
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Agents/topics/a.md","new_path":"Actions/a.md"}),
+        ),
+        "write_denied",
+    );
+    assert!(tmp.path().join("Actions/release.md").exists());
+    assert!(!tmp.path().join("Actions/new.md").exists());
+    assert_eq!(read_clean(&tb, "Agents/topics/a.md"), "x");
+}
+
+#[test]
+fn rename_missing_source_is_not_found() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Agents/topics/ghost.md","new_path":"Agents/topics/g.md"}),
+        ),
+        "not_found",
+    );
+}
+
+#[test]
+fn rename_shared_to_scoped_is_refused_when_shared_referrers_exist() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Readwrite);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Actions/release.md","content":"shared target"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Actions/index.md","content":"see [[release]]"}),
+    )
+    .unwrap();
+
+    // Rewriting the shared referrer would persist the caller's scope suffix in
+    // the shared region — the whole rename is refused.
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Actions/release.md","new_path":"Agents/topics/release.md"}),
+        ),
+        "write_denied",
+    );
+    assert_eq!(read_clean(&tb, "Actions/release.md"), "shared target");
+    assert_eq!(read_clean(&tb, "Actions/index.md"), "see [[release]]");
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/release.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn rename_leak_guard_applies_to_moved_content() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Readwrite);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/helper.md","content":"h"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"see [[helper]]"}),
+    )
+    .unwrap();
+
+    // Moving the note outside would persist a scoped link in the shared region.
+    assert_code(
+        call(
+            &tb,
+            "rename_memory_note",
+            json!({"agent":"jarvis","user":"tony",
+                   "path":"Agents/topics/rust.md","new_path":"Actions/rust.md"}),
+        ),
+        "write_denied",
+    );
+    assert_eq!(read_clean(&tb, "Agents/topics/rust.md"), "see [[helper]]");
+    assert!(!tmp.path().join("Actions/rust.md").exists());
+}
+
+#[test]
+fn rename_recall_hits_new_path_only_without_watcher() {
+    let tmp = TempDir::new().unwrap();
+    let tb = frozen_recall_toolbox(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"the zyzzyva fact"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","content":"see [[rust]]"}),
+    )
+    .unwrap();
+
+    let hit_paths = |body: &Value| -> Vec<String> {
+        body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["path"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // First query builds the index; the hit is at the old path.
+    let before = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","query":"zyzzyva"}),
+    ));
+    assert_eq!(hit_paths(&before), vec!["Agents/topics/rust.md"]);
+
+    call(
+        &tb,
+        "rename_memory_note",
+        json!({"agent":"jarvis","user":"tony",
+               "path":"Agents/topics/rust.md","new_path":"Agents/topics/rust-lang.md"}),
+    )
+    .unwrap();
+
+    // The frozen index can only have learned of the rename through the
+    // server's own synchronous notifications — no watcher, no reconcile.
+    let after = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","query":"zyzzyva"}),
+    ));
+    assert_eq!(hit_paths(&after), vec!["Agents/topics/rust-lang.md"]);
 }
 
 // --- write_memory_note ---

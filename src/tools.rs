@@ -1,5 +1,5 @@
 //! The agent-facing tool surface: schema generation, scope extraction, and the
-//! tool handlers (the nine memory-note tools plus `recall_memory_notes` when the
+//! tool handlers (the ten memory-note tools plus `recall_memory_notes` when the
 //! recall backend is enabled).
 //!
 //! Each tool's input schema is assembled at startup by merging the
@@ -26,7 +26,7 @@ use crate::path::{PhysicalPath, VirtualPath};
 use crate::policy::{Policy, PolicyError, Region};
 use crate::recall::{FilterOp, PropertyFilter, RecallEngine, RecallQuery};
 use crate::scheme::Scheme;
-use crate::storage::{Cursor, Storage};
+use crate::storage::{Cursor, LinkEntry, Storage};
 
 /// The default page size for `list_memory_notes`.
 const DEFAULT_LIMIT: u64 = 200;
@@ -40,6 +40,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "write_memory_note",
     "edit_memory_note",
     "delete_memory_note",
+    "rename_memory_note",
     "load_session_context",
     "evolve_core_persona",
     "update_task_heartbeat",
@@ -133,6 +134,16 @@ struct EditFields {
     search_string: String,
     /// The replacement string.
     replace_string: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct RenameFields {
+    /// The current virtual path of the note, relative to the vault root.
+    path: String,
+    /// The destination virtual path, relative to the vault root. Must not
+    /// already name an existing note.
+    new_path: String,
 }
 
 #[derive(JsonSchema)]
@@ -284,6 +295,7 @@ impl Toolbox {
             "write_memory_note" => self.write_memory_note(args),
             "edit_memory_note" => self.edit_memory_note(args),
             "delete_memory_note" => self.delete_memory_note(args),
+            "rename_memory_note" => self.rename_memory_note(args),
             "load_session_context" => self.load_session_context(args),
             "evolve_core_persona" => self.evolve_core_persona(args),
             "update_task_heartbeat" => self.update_task_heartbeat(args),
@@ -726,6 +738,135 @@ impl Toolbox {
         Ok(ok_json(json!({ "deleted": true })))
     }
 
+    /// Move a note from `path` to `new_path`, rewriting every visible incoming
+    /// link to resolve to the new location. Phase 1 validates everything and
+    /// computes every rewritten content with no writes; phase 2 then mutates in
+    /// the order destination → referrers → source, so a crash mid-flight leaves
+    /// both copies present and never a dangling reference.
+    fn rename_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let scope = self.resolve_scope(args, &["path", "new_path"])?;
+        let vpath = VirtualPath::new(&require_str(args, "path")?)?;
+        let new_vpath = VirtualPath::new(&require_str(args, "new_path")?)?;
+        let resolver = self.storage.resolver();
+
+        // --- Phase 1: validate and compute; no writes. ---
+        // Core files are wrapper-managed on both ends.
+        self.reject_if_root_reserved(&vpath)?;
+        self.reject_if_root_reserved(&new_vpath)?;
+
+        // Both the source's and the destination's region must be policy-writable.
+        let src_region = resolver.detect_region(&vpath);
+        self.policy
+            .gate_write(src_region)
+            .map_err(|e| Self::policy_err(e, &vpath))?;
+        let dest_region = resolver.detect_region(&new_vpath);
+        self.policy
+            .gate_write(dest_region)
+            .map_err(|e| Self::policy_err(e, &new_vpath))?;
+
+        let src_physical = resolver.resolve(&scope, &vpath)?;
+        if !self.storage.is_visible(&src_physical) {
+            return Err(AgentmemError::PathNotPermitted {
+                virtual_path: vpath.as_str().to_string(),
+            });
+        }
+        let stored = self.storage.read(&src_physical)?;
+
+        let dest_physical = resolver.resolve(&scope, &new_vpath)?;
+        if !self.storage.is_visible(&dest_physical) {
+            return Err(AgentmemError::PathNotPermitted {
+                virtual_path: new_vpath.as_str().to_string(),
+            });
+        }
+        if dest_physical.as_path().exists() {
+            return Err(AgentmemError::DestinationExists {
+                virtual_path: new_vpath.as_str().to_string(),
+            });
+        }
+
+        let source_clean = vpath.as_str().strip_suffix(".md").unwrap_or(vpath.as_str());
+        let dest_entry = LinkEntry {
+            clean_path: new_vpath
+                .as_str()
+                .strip_suffix(".md")
+                .unwrap_or(new_vpath.as_str())
+                .to_string(),
+            region: dest_region,
+        };
+        let regions = self.policy.list_visible_regions(self.scheme().is_empty());
+        let index = self.storage.build_link_index(&scope, &regions)?;
+
+        // The moved note's own content: strip to the clean form, re-point
+        // self-references at the destination, then re-expand for the
+        // destination's region against the post-rename visible set (the
+        // cross-scope leak guard surfaces here, before any mutation).
+        let clean_content = self.strip_links_for(&scope, &stored);
+        let (retargeted, _) = crate::wikilink::retarget_links(
+            &clean_content,
+            source_clean,
+            &dest_entry,
+            &scope,
+            dest_region,
+            resolver,
+            &index,
+        )?;
+        let dest_content = if self.scheme().is_empty() {
+            retargeted
+        } else {
+            let post = crate::wikilink::post_rename_index(&index, source_clean, &dest_entry);
+            crate::wikilink::expand_links(&retargeted, &scope, dest_region, resolver, &post)?
+        };
+
+        // Referrers: every visible note with a link resolving to the source must
+        // live in a writable region; compute each rewritten content now.
+        let mut rewrites: Vec<(Region, PhysicalPath, String)> = Vec::new();
+        for referrer in self.storage.list_visible(&scope, &regions)? {
+            if referrer == vpath {
+                continue; // the moved note's own content is handled above
+            }
+            let r_physical = resolver.resolve(&scope, &referrer)?;
+            let Ok(r_content) = self.storage.read(&r_physical) else {
+                continue; // unreadable notes cannot contain resolvable links
+            };
+            if !crate::wikilink::references_to(&r_content, source_clean, &scope, resolver, &index) {
+                continue;
+            }
+            let r_region = resolver.detect_region(&referrer);
+            self.policy
+                .gate_write(r_region)
+                .map_err(|e| Self::policy_err(e, &referrer))?;
+            let (rewritten, _) = crate::wikilink::retarget_links(
+                &r_content,
+                source_clean,
+                &dest_entry,
+                &scope,
+                r_region,
+                resolver,
+                &index,
+            )?;
+            rewrites.push((r_region, r_physical, rewritten));
+        }
+
+        // --- Phase 2: mutate. Destination first, source last, so a crash
+        // mid-flight leaves every link resolvable to at least one copy. ---
+        self.storage.write_atomic(&dest_physical, &dest_content)?;
+        self.recall_on_write(&scope, dest_region, &dest_physical);
+        let notes_rewritten = rewrites.len();
+        for (r_region, r_physical, rewritten) in rewrites {
+            self.storage.write_atomic(&r_physical, &rewritten)?;
+            self.recall_on_write(&scope, r_region, &r_physical);
+        }
+        self.storage.delete(&src_physical)?;
+        self.recall_on_write(&scope, src_region, &src_physical);
+
+        Ok(ok_json(json!({
+            "renamed": true,
+            "path": vpath.as_str(),
+            "new_path": new_vpath.as_str(),
+            "notes_rewritten": notes_rewritten,
+        })))
+    }
+
     fn load_session_context(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         // Accept only scope parameters (no `path`/`which`).
         let scope = self.scope_map(args, &[])?;
@@ -1111,6 +1252,11 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
             "delete_memory_note",
             "Delete a single memory note by its virtual path.",
             merge_schema(scheme, fields_schema::<PathFields>()),
+        ),
+        tool(
+            "rename_memory_note",
+            "Move a single note from `path` to `new_path`, rewriting every visible incoming link (decorations preserved) to resolve to the new location. The destination must not already exist.",
+            merge_schema(scheme, fields_schema::<RenameFields>()),
         ),
         tool(
             "load_session_context",

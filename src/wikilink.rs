@@ -145,6 +145,100 @@ pub(crate) fn references_to(
     found
 }
 
+/// The visible set as it will look after a rename: every entry of `index` with
+/// the note at `source_clean_path` replaced by `destination`. Link-target
+/// derivation (shortest names, ambiguity) for rename rewrites runs against this
+/// index so the output is identical to what the forward transform would produce
+/// against the post-rename vault.
+pub(crate) fn post_rename_index(
+    index: &LinkIndex,
+    source_clean_path: &str,
+    destination: &LinkEntry,
+) -> LinkIndex {
+    let mut post = LinkIndex::default();
+    for entry in index.all_entries() {
+        if entry.clean_path == source_clean_path {
+            post.insert(&destination.clean_path, destination.region);
+        } else {
+            post.insert(&entry.clean_path, entry.region);
+        }
+    }
+    post.sort();
+    post
+}
+
+/// Rewrite, in `content` (its stored on-disk form), exactly those link targets
+/// whose forward resolution selects the note at `source_clean_path` (clean,
+/// vault-root-relative, `.md` stripped), re-pointing them at `destination`. The
+/// new target text is derived the same way the write-side transform derives it —
+/// shortest unambiguous name against the post-rename index, suffixed for
+/// own-scope wikilinks, vault-root-relative physical path for own-scope markdown
+/// links, clean for shared targets — so a subsequent read round-trips. Aliases,
+/// headings, embed markers, and every non-matching byte are untouched. Returns
+/// the rewritten content and the number of links re-targeted.
+///
+/// `index` is the **pre-rename** index (it still contains the source), so
+/// targets resolve exactly as they were authored.
+///
+/// When `file_region` is the shared region and `destination` is scoped, a
+/// matching link is refused with the cross-scope leak guard — persisting the
+/// suffixed form would leak the scope's existence.
+pub(crate) fn retarget_links(
+    content: &str,
+    source_clean_path: &str,
+    destination: &LinkEntry,
+    rendered_scope: &str,
+    file_region: Region,
+    resolver: &PathResolver,
+    index: &LinkIndex,
+) -> Result<(String, usize), AgentmemError> {
+    let post = post_rename_index(index, source_clean_path, destination);
+    let mut count = 0usize;
+    let rewritten = rewrite_links(content, |kind, target| {
+        let stripped = strip_target(kind, target, rendered_scope, resolver);
+        let clean = stripped.as_deref().unwrap_or(target);
+        let selects_source = resolve_target(index, kind, clean)
+            .is_some_and(|entry| entry.clean_path == source_clean_path);
+        if !selects_source {
+            return Ok(None); // resolves elsewhere or dangles — leave verbatim
+        }
+        if file_region == Region::OutsideAgentsFolder
+            && destination.region == Region::InsideAgentsFolder
+        {
+            return Err(AgentmemError::CrossScopeLink {
+                target: target.to_string(),
+            });
+        }
+        count += 1;
+        let rendered = shortest_name(&post, destination);
+        match (kind, destination.region) {
+            (LinkKind::Wikilink, Region::InsideAgentsFolder) => {
+                // An empty rendered scope (empty scheme) carries no suffix.
+                if rendered_scope.is_empty() {
+                    Ok(Some(rendered))
+                } else {
+                    Ok(Some(apply_suffix_to_link_target(&rendered, rendered_scope)))
+                }
+            }
+            (LinkKind::Markdown, Region::InsideAgentsFolder) => {
+                let vpath = VirtualPath::new(&format!("{}.md", destination.clean_path))?;
+                let physical = resolver.resolve(rendered_scope, &vpath)?;
+                let rel = physical
+                    .as_path()
+                    .strip_prefix(resolver.vault_root())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| destination.clean_path.clone());
+                Ok(Some(rel))
+            }
+            (LinkKind::Wikilink, Region::OutsideAgentsFolder) => Ok(Some(rendered)),
+            (LinkKind::Markdown, Region::OutsideAgentsFolder) => {
+                Ok(Some(format!("{}.md", destination.clean_path)))
+            }
+        }
+    })?;
+    Ok((rewritten, count))
+}
+
 /// Reverse the own-scope markdown physical form back to the agents-folder-relative
 /// clean path, or `None` when the target is not an own-scope physical path.
 fn strip_markdown_physical(
@@ -681,6 +775,134 @@ mod tests {
             &r,
             &idx,
         ));
+    }
+
+    // --- retarget_links (rename rewrite) ---
+
+    fn entry(clean_path: &str, region: Region) -> LinkEntry {
+        LinkEntry {
+            clean_path: clean_path.to_string(),
+            region,
+        }
+    }
+
+    #[test]
+    fn retarget_preserves_decorations() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let dest = entry("Agents/topics/rust-lang", Region::InsideAgentsFolder);
+        let (out, n) = retarget_links(
+            "[[rust.jarvis.tony#install|the note]] and ![[rust.jarvis.tony]]",
+            "Agents/topics/rust",
+            &dest,
+            "jarvis.tony",
+            Region::InsideAgentsFolder,
+            &r,
+            &idx,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "[[rust-lang.jarvis.tony#install|the note]] and ![[rust-lang.jarvis.tony]]"
+        );
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn retarget_leaves_non_matching_same_basename_links_untouched() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[
+            ("Agents/topics/rust.md", Region::InsideAgentsFolder),
+            ("Lang/rust.md", Region::OutsideAgentsFolder),
+        ]);
+        let dest = entry("Agents/topics/rust-lang", Region::InsideAgentsFolder);
+        let (out, n) = retarget_links(
+            "[[topics/rust.jarvis.tony]] vs [[Lang/rust]]",
+            "Agents/topics/rust",
+            &dest,
+            "jarvis.tony",
+            Region::InsideAgentsFolder,
+            &r,
+            &idx,
+        )
+        .unwrap();
+        // Only the link resolving to the source is rewritten; the shared
+        // same-basename link is byte-identical.
+        assert_eq!(out, "[[rust-lang.jarvis.tony]] vs [[Lang/rust]]");
+        assert_eq!(n, 1);
+    }
+
+    /// The rewritten name is the shortest unambiguous form against the
+    /// post-rename set: the qualified `topics/rust` collapses to the bare new
+    /// basename once it no longer collides with `Lang/rust`.
+    #[test]
+    fn retarget_rederives_shortest_name_post_rename() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[
+            ("Agents/topics/rust.md", Region::InsideAgentsFolder),
+            ("Lang/rust.md", Region::OutsideAgentsFolder),
+        ]);
+        let dest = entry("Agents/topics/rust-lang", Region::InsideAgentsFolder);
+        let (out, n) = retarget_links(
+            "see [[topics/rust.jarvis.tony]]",
+            "Agents/topics/rust",
+            &dest,
+            "jarvis.tony",
+            Region::InsideAgentsFolder,
+            &r,
+            &idx,
+        )
+        .unwrap();
+        assert_eq!(out, "see [[rust-lang.jarvis.tony]]");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn retarget_rewrites_markdown_physical_path() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let dest = entry("Agents/topics/rust-lang", Region::InsideAgentsFolder);
+        let (out, n) = retarget_links(
+            "[doc](Agents/jarvis.tony/topics/rust.jarvis.tony.md)",
+            "Agents/topics/rust",
+            &dest,
+            "jarvis.tony",
+            Region::InsideAgentsFolder,
+            &r,
+            &idx,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "[doc](Agents/jarvis.tony/topics/rust-lang.jarvis.tony.md)"
+        );
+        assert_eq!(n, 1);
+    }
+
+    /// A shared referrer cannot be re-pointed at a scoped destination: the
+    /// suffixed link would leak the scope's existence into the shared region.
+    #[test]
+    fn retarget_shared_referrer_to_scoped_destination_is_leak_guarded() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Actions/release.md", Region::OutsideAgentsFolder)]);
+        let dest = entry("Agents/topics/release", Region::InsideAgentsFolder);
+        let err = retarget_links(
+            "ship [[release]]",
+            "Actions/release",
+            &dest,
+            "jarvis.tony",
+            Region::OutsideAgentsFolder,
+            &r,
+            &idx,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AgentmemError::CrossScopeLink { .. }));
+        assert_eq!(err.code(), crate::error::ErrorCode::WriteDenied);
     }
 
     #[test]

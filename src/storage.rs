@@ -86,7 +86,7 @@ impl LinkIndex {
 
     /// Sort each basename's entries by clean path for deterministic resolution
     /// and rendering, regardless of filesystem walk order.
-    fn sort(&mut self) {
+    pub(crate) fn sort(&mut self) {
         for entries in self.by_basename.values_mut() {
             entries.sort_by(|a, b| a.clean_path.cmp(&b.clean_path));
         }

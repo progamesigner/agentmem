@@ -275,6 +275,39 @@ expression: "schemas_for(\"<agent>.<user>\")"
       "type": "object"
     }
   },
+  "rename_memory_note": {
+    "description": "Move a single note from `path` to `new_path`, rewriting every visible incoming link (decorations preserved) to resolve to the new location. The destination must not already exist.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "new_path": {
+          "description": "The destination virtual path, relative to the vault root. Must not\nalready name an existing note.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The current virtual path of the note, relative to the vault root.",
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "user",
+        "path",
+        "new_path"
+      ],
+      "type": "object"
+    }
+  },
   "update_task_heartbeat": {
     "description": "Atomically replace the scope's HEARTBEAT.md.",
     "input_schema": {

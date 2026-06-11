@@ -200,6 +200,7 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 | `write_memory_note` | Atomic full-file write; returns the byte count. |
 | `edit_memory_note` | Atomic search/replace; the search string must occur exactly once. |
 | `delete_memory_note` | Delete a single file (never directories). |
+| `rename_memory_note` | Move a note from `path` to `new_path`, rewriting every visible incoming link (aliases, headings, and embeds preserved) and the note's own self-references to resolve to the new location. The destination must not already exist (`destination_exists`); all preconditions are validated before the first write. |
 | `load_session_context` | Render the scope's session-context (see [Session context](#session-context)); returns `{ rendered, missing }`. |
 | `evolve_core_persona` | Atomic write to one of the five foundational files (`persona`/`prompt`/`rules`/`user`/`memory`), selected by `which`. Enforces line caps: `USER.md` ≤ 100, `MEMORY.md` ≤ 200. |
 | `update_task_heartbeat` | Atomic write to `HEARTBEAT.md`. |

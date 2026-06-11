@@ -96,8 +96,8 @@ async fn http_default_bind_health_and_mcp_roundtrip() {
     );
     let service = ().serve(transport).await.expect("mcp initialize");
     let tools = service.list_tools(Default::default()).await.unwrap();
-    // Nine core tools plus recall_memory_notes (default `simple` backend).
-    assert_eq!(tools.tools.len(), 10);
+    // Ten core tools plus recall_memory_notes (default `simple` backend).
+    assert_eq!(tools.tools.len(), 11);
     assert!(tools.tools.iter().any(|t| t.name == "recall_memory_notes"));
     service.cancel().await.unwrap();
 
