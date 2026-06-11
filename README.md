@@ -320,6 +320,11 @@ behind the same `AGENTMEM_HTTP_BEARER` gate as `/mcp` (add
 `-H "Authorization: Bearer <token>"` when a bearer is configured); only the
 `/healthz` and `/readyz` probes are always reachable.
 
+To bootstrap this context automatically at the start of every session — via a
+Claude Code / Codex `SessionStart` hook, an opencode plugin, or the MCP
+fallback for other clients — see
+[`docs/session-context-hooks.md`](docs/session-context-hooks.md).
+
 ## Policies
 
 There are two regions per server: **inside** the agents folder (scoped,
