@@ -956,6 +956,222 @@ fn read_without_backlinks_flag_is_unchanged() {
     assert_eq!(explicit_false, json!({"content": "x"}));
 }
 
+// --- read_memory_notes ---
+
+#[test]
+fn batch_read_returns_contents_in_request_order() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"own"}),
+    )
+    .unwrap();
+    write_outside(&tmp, "Actions/release.md", "shared");
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":["Agents/topics/rust.md","Actions/release.md"]}),
+    ));
+    assert_eq!(
+        body["notes"],
+        json!([
+            {"path": "Agents/topics/rust.md", "content": "own"},
+            {"path": "Actions/release.md", "content": "shared"},
+        ])
+    );
+}
+
+#[test]
+fn batch_read_strips_links_like_single_read() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    // The link target must exist for [[rust]] to resolve, expand on write, and
+    // be stored in the suffixed on-disk form.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"seed"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md",
+               "content":"see [[rust]]"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony","paths":["Agents/notes/memo.md"]}),
+    ));
+    let batch_content = body["notes"][0]["content"].as_str().unwrap();
+    assert_eq!(batch_content, "see [[rust]]");
+    assert_eq!(batch_content, read_clean(&tb, "Agents/notes/memo.md"));
+}
+
+#[test]
+fn batch_read_duplicate_paths_answered_positionally() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"x"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":["Agents/topics/rust.md","Agents/topics/rust.md"]}),
+    ));
+    assert_eq!(
+        body["notes"],
+        json!([
+            {"path": "Agents/topics/rust.md", "content": "x"},
+            {"path": "Agents/topics/rust.md", "content": "x"},
+        ])
+    );
+}
+
+#[test]
+fn batch_read_partial_failure_does_not_void_the_batch() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for (path, content) in [
+        ("Agents/topics/a.md", "first"),
+        ("Agents/topics/c.md", "third"),
+    ] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":content}),
+        )
+        .unwrap();
+    }
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":["Agents/topics/a.md","Agents/topics/missing.md","Agents/topics/c.md"]}),
+    ));
+    let notes = body["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 3);
+    assert_eq!(
+        notes[0],
+        json!({"path": "Agents/topics/a.md", "content": "first"})
+    );
+    assert_eq!(notes[1]["path"], "Agents/topics/missing.md");
+    assert_eq!(notes[1]["error"]["code"], "not_found");
+    assert!(notes[1].get("content").is_none());
+    assert_eq!(
+        notes[2],
+        json!({"path": "Agents/topics/c.md", "content": "third"})
+    );
+}
+
+#[test]
+fn batch_read_hidden_entry_is_path_not_permitted() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/ok.md","content":"fine"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":["Agents/topics/.secret.md","Agents/topics/ok.md"]}),
+    ));
+    let notes = body["notes"].as_array().unwrap();
+    assert_eq!(notes[0]["error"]["code"], "path_not_permitted");
+    assert_eq!(
+        notes[1],
+        json!({"path": "Agents/topics/ok.md", "content": "fine"})
+    );
+}
+
+#[test]
+fn batch_read_policy_denied_entry_is_path_not_permitted() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Scoped);
+    write_outside(&tmp, "Actions/release.md", "notes");
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/ok.md","content":"fine"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":["Actions/release.md","Agents/topics/ok.md"]}),
+    ));
+    let notes = body["notes"].as_array().unwrap();
+    assert_eq!(notes[0]["error"]["code"], "path_not_permitted");
+    assert_eq!(
+        notes[1],
+        json!({"path": "Agents/topics/ok.md", "content": "fine"})
+    );
+}
+
+#[test]
+fn batch_read_empty_array_is_invalid_argument() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "read_memory_notes",
+            json!({"agent":"jarvis","user":"tony","paths":[]}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn batch_read_over_twenty_entries_is_invalid_argument() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let paths: Vec<String> = (0..21).map(|i| format!("Agents/topics/{i}.md")).collect();
+    assert_code(
+        call(
+            &tb,
+            "read_memory_notes",
+            json!({"agent":"jarvis","user":"tony","paths":paths}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn batch_read_non_string_entry_is_invalid_argument() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "read_memory_notes",
+            json!({"agent":"jarvis","user":"tony","paths":["Agents/topics/ok.md", 7]}),
+        ),
+        "invalid_argument",
+    );
+}
+
 // --- rename_memory_note ---
 
 /// Read a note's clean content via the tool.

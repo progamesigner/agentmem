@@ -1,6 +1,6 @@
 //! The agent-facing tool surface: schema generation, scope extraction, and the
-//! tool handlers (the ten memory-note tools plus `recall_memory_notes` when the
-//! recall backend is enabled).
+//! tool handlers (the eleven memory-note tools plus `recall_memory_notes` when
+//! the recall backend is enabled).
 //!
 //! Each tool's input schema is assembled at startup by merging the
 //! scheme-derived scope fields (see [`crate::scheme::Scheme::to_json_schema`])
@@ -32,11 +32,14 @@ use crate::storage::{Cursor, LinkEntry, Storage};
 const DEFAULT_LIMIT: u64 = 200;
 /// The maximum permitted page size.
 const MAX_LIMIT: u64 = 1000;
+/// The maximum number of paths accepted by `read_memory_notes`.
+const MAX_BATCH_READ: usize = 20;
 
 /// The set of tool names this server exposes, in advertised order.
 pub const TOOL_NAMES: &[&str] = &[
     "list_memory_notes",
     "read_memory_note",
+    "read_memory_notes",
     "write_memory_note",
     "edit_memory_note",
     "delete_memory_note",
@@ -102,6 +105,16 @@ enum ListView {
 struct PathFields {
     /// The virtual path of the note, relative to the vault root.
     path: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct BatchReadFields {
+    /// 1 to 20 virtual paths, each relative to the vault root. The result carries
+    /// one `notes` entry per requested path, in request order: `{ path, content }`
+    /// on success or `{ path, error: { code, message } }` on failure. Per-path
+    /// failures (e.g. `not_found`, `path_not_permitted`) do not fail the call.
+    paths: Vec<String>,
 }
 
 #[derive(JsonSchema)]
@@ -297,6 +310,7 @@ impl Toolbox {
         let result = match name {
             "list_memory_notes" => self.list_memory_notes(args),
             "read_memory_note" => self.read_memory_note(args),
+            "read_memory_notes" => self.read_memory_notes(args),
             "write_memory_note" => self.write_memory_note(args),
             "edit_memory_note" => self.edit_memory_note(args),
             "delete_memory_note" => self.delete_memory_note(args),
@@ -628,22 +642,30 @@ impl Toolbox {
         })))
     }
 
-    fn read_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["path", "backlinks"])?;
-        let vpath = VirtualPath::new(&require_str(args, "path")?)?;
-        let want_backlinks = opt_bool(args, "backlinks")?.unwrap_or(false);
+    /// Read one note for `scope` with full single-read semantics: policy gate by
+    /// region, suffix resolution, visibility check, read, own-suffix link strip.
+    /// Shared by `read_memory_note` and `read_memory_notes` so the two cannot
+    /// drift.
+    fn read_one(&self, scope: &str, vpath: &VirtualPath) -> Result<String, AgentmemError> {
         let resolver = self.storage.resolver();
-        let region = resolver.detect_region(&vpath);
+        let region = resolver.detect_region(vpath);
         self.policy
             .gate_read(region)
-            .map_err(|e| Self::policy_err(e, &vpath))?;
-        let physical = resolver.resolve(&scope, &vpath)?;
+            .map_err(|e| Self::policy_err(e, vpath))?;
+        let physical = resolver.resolve(scope, vpath)?;
         if !self.storage.is_visible(&physical) {
             return Err(AgentmemError::PathNotPermitted {
                 virtual_path: vpath.as_str().to_string(),
             });
         }
-        let content = self.strip_links_for(&scope, &self.storage.read(&physical)?);
+        Ok(self.strip_links_for(scope, &self.storage.read(&physical)?))
+    }
+
+    fn read_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let scope = self.resolve_scope(args, &["path", "backlinks"])?;
+        let vpath = VirtualPath::new(&require_str(args, "path")?)?;
+        let want_backlinks = opt_bool(args, "backlinks")?.unwrap_or(false);
+        let content = self.read_one(&scope, &vpath)?;
         let mut structured = json!({ "content": &content });
         if want_backlinks {
             structured["backlinks"] = json!(self.collect_backlinks(&scope, &vpath)?);
@@ -651,6 +673,34 @@ impl Toolbox {
         let mut result = CallToolResult::success(vec![Content::text(content)]);
         result.structured_content = Some(structured);
         Ok(result)
+    }
+
+    fn read_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let scope = self.resolve_scope(args, &["paths"])?;
+        let paths = require_str_array(args, "paths")?;
+        if paths.is_empty() {
+            return Err(AgentmemError::InvalidArgument {
+                message: "argument 'paths' must contain at least one path".to_string(),
+            });
+        }
+        if paths.len() > MAX_BATCH_READ {
+            return Err(AgentmemError::InvalidArgument {
+                message: format!("argument 'paths' must not exceed {MAX_BATCH_READ} entries"),
+            });
+        }
+        let notes: Vec<Value> = paths
+            .iter()
+            .map(|path| {
+                match VirtualPath::new(path).and_then(|vpath| self.read_one(&scope, &vpath)) {
+                    Ok(content) => json!({ "path": path, "content": content }),
+                    Err(err) => json!({
+                        "path": path,
+                        "error": { "code": err.code().as_str(), "message": err.to_string() },
+                    }),
+                }
+            })
+            .collect();
+        Ok(ok_json(json!({ "notes": notes })))
     }
 
     /// The clean virtual paths of every visible note containing at least one
@@ -1150,6 +1200,30 @@ fn require_str(args: &JsonObject, key: &str) -> Result<String, AgentmemError> {
     }
 }
 
+/// Require an array-of-strings argument, erroring with `invalid_argument` when
+/// absent, not an array, or containing a non-string entry.
+fn require_str_array(args: &JsonObject, key: &str) -> Result<Vec<String>, AgentmemError> {
+    let value = args
+        .get(key)
+        .ok_or_else(|| AgentmemError::InvalidArgument {
+            message: format!("missing required argument '{key}'"),
+        })?;
+    let Value::Array(items) = value else {
+        return Err(AgentmemError::InvalidArgument {
+            message: format!("argument '{key}' must be an array"),
+        });
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::String(s) => Ok(s.clone()),
+            _ => Err(AgentmemError::InvalidArgument {
+                message: format!("argument '{key}' entries must be strings"),
+            }),
+        })
+        .collect()
+}
+
 fn opt_str(args: &JsonObject, key: &str) -> Result<Option<String>, AgentmemError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1250,6 +1324,11 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
             "read_memory_note",
             "Read the UTF-8 contents of a single memory note by its virtual path. Set `backlinks` to also return the visible notes whose links resolve to it.",
             merge_schema(scheme, fields_schema::<ReadFields>()),
+        ),
+        tool(
+            "read_memory_notes",
+            "Read up to 20 memory notes in one call. Returns one `notes` entry per requested path, in request order: `{ path, content }` on success or `{ path, error: { code, message } }` on failure. Per-path failures do not fail the call.",
+            merge_schema(scheme, fields_schema::<BatchReadFields>()),
         ),
         tool(
             "write_memory_note",

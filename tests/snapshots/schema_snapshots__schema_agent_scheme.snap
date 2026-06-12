@@ -234,6 +234,31 @@ expression: "schemas_for(\"<agent>\")"
       "type": "object"
     }
   },
+  "read_memory_notes": {
+    "description": "Read up to 20 memory notes in one call. Returns one `notes` entry per requested path, in request order: `{ path, content }` on success or `{ path, error: { code, message } }` on failure. Per-path failures do not fail the call.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "paths": {
+          "description": "1 to 20 virtual paths, each relative to the vault root. The result carries\none `notes` entry per requested path, in request order: `{ path, content }`\non success or `{ path, error: { code, message } }` on failure. Per-path\nfailures (e.g. `not_found`, `path_not_permitted`) do not fail the call.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "agent",
+        "paths"
+      ],
+      "type": "object"
+    }
+  },
   "rename_memory_note": {
     "description": "Move a single note from `path` to `new_path`, rewriting every visible incoming link (decorations preserved) to resolve to the new location. The destination must not already exist.",
     "input_schema": {
