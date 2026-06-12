@@ -241,7 +241,7 @@ expression: "schemas_for(\"<agent>.<user>\")"
     }
   },
   "read_memory_note": {
-    "description": "Read the UTF-8 contents of a single memory note by its virtual path. Set `backlinks` to also return the visible notes whose links resolve to it.",
+    "description": "Read the UTF-8 contents of a single memory note by its virtual path. Optional `offset`/`limit` select a 1-based line range and add `total_lines` (the full note's line count) to the result. Set `backlinks` to also return the visible notes whose links resolve to it.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -254,6 +254,24 @@ expression: "schemas_for(\"<agent>.<user>\")"
           "description": "When `true`, the structured result additionally carries a `backlinks`\narray: the clean virtual path of every visible note containing at least\none link that resolves to this note, deduplicated and sorted ascending.\nAbsent or `false` leaves the response unchanged.",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional maximum number of lines to return, counted from `offset`\n(default: all remaining lines).",
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Optional 1-based line number of the first returned line (default 1).\nWhen `offset` or `limit` is supplied, the structured result additionally\ncarries `total_lines` — the line count of the full note — and an offset\npast the last line returns empty content rather than an error.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -276,7 +294,7 @@ expression: "schemas_for(\"<agent>.<user>\")"
     }
   },
   "read_memory_notes": {
-    "description": "Read up to 20 memory notes in one call. Returns one `notes` entry per requested path, in request order: `{ path, content }` on success or `{ path, error: { code, message } }` on failure. Per-path failures do not fail the call.",
+    "description": "Read up to 20 memory notes in one call. Each `paths` entry is a virtual path string (whole note) or `{ path, offset?, limit? }` requesting a line range plus `total_lines`. Returns one `notes` entry per requested path, in request order: `{ path, content }` on success or `{ path, error: { code, message } }` on failure. Per-path failures do not fail the call.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -286,9 +304,46 @@ expression: "schemas_for(\"<agent>.<user>\")"
           "type": "string"
         },
         "paths": {
-          "description": "1 to 20 virtual paths, each relative to the vault root. The result carries\none `notes` entry per requested path, in request order: `{ path, content }`\non success or `{ path, error: { code, message } }` on failure. Per-path\nfailures (e.g. `not_found`, `path_not_permitted`) do not fail the call.",
+          "description": "1 to 20 entries, each either a vault-root-relative virtual path string\n(the whole note) or an object `{ path, offset?, limit? }` requesting a\nline range of that note. The result carries one `notes` entry per\nrequested path, in request order: `{ path, content }` on success or\n`{ path, error: { code, message } }` on failure, plus `total_lines` when\na range was requested. Per-path failures (e.g. `not_found`,\n`path_not_permitted`) do not fail the call.",
           "items": {
-            "type": "string"
+            "anyOf": [
+              {
+                "description": "A virtual path, relative to the vault root; the whole note is returned.",
+                "type": "string"
+              },
+              {
+                "description": "A path with an optional line range, with the same `offset`/`limit`\nsemantics as `read_memory_note`; the entry's result additionally carries\n`total_lines`.",
+                "properties": {
+                  "limit": {
+                    "description": "Maximum number of lines to return (default: all remaining lines).",
+                    "format": "uint64",
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "offset": {
+                    "description": "1-based line number of the first returned line.",
+                    "format": "uint64",
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "path": {
+                    "description": "The virtual path of the note, relative to the vault root.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "One `read_memory_notes` entry: a bare virtual path (the whole note) or an\nobject requesting a line range of that note."
           },
           "type": "array"
         },

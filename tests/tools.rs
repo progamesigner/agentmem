@@ -967,6 +967,198 @@ fn read_without_backlinks_flag_is_unchanged() {
     assert_eq!(explicit_false, json!({"content": "x"}));
 }
 
+// --- read_memory_note line ranges ---
+
+/// A note of `lines` numbered lines: `l1\n` through `l<lines>\n`.
+fn numbered_note(lines: usize) -> String {
+    (1..=lines).map(|i| format!("l{i}\n")).collect()
+}
+
+/// The expected slice of [`numbered_note`] from line `from` through `to`.
+fn numbered_lines(from: usize, to: usize) -> String {
+    (from..=to).map(|i| format!("l{i}\n")).collect()
+}
+
+#[test]
+fn read_mid_file_range_returns_slice_and_total_lines() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","content":numbered_note(50)}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","offset":11,"limit":10}),
+    ));
+    assert_eq!(body["content"], numbered_lines(11, 20));
+    assert_eq!(body["total_lines"], 50);
+}
+
+#[test]
+fn read_offset_alone_reads_to_the_end() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","content":numbered_note(50)}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","offset":41}),
+    ));
+    assert_eq!(body["content"], numbered_lines(41, 50));
+    assert_eq!(body["total_lines"], 50);
+}
+
+#[test]
+fn read_limit_alone_reads_from_the_start() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","content":numbered_note(50)}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","limit":5}),
+    ));
+    assert_eq!(body["content"], numbered_lines(1, 5));
+    assert_eq!(body["total_lines"], 50);
+}
+
+#[test]
+fn read_offset_past_eof_is_empty_not_an_error() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/short.md","content":numbered_note(10)}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/short.md","offset":11}),
+    ));
+    assert_eq!(body["content"], "");
+    assert_eq!(body["total_lines"], 10);
+}
+
+#[test]
+fn read_zero_offset_or_limit_is_invalid_argument() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md","content":"x"}),
+    )
+    .unwrap();
+    for args in [
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md","offset":0}),
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md","limit":0}),
+    ] {
+        assert_code(call(&tb, "read_memory_note", args), "invalid_argument");
+    }
+}
+
+#[test]
+fn read_without_range_carries_no_total_lines() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md","content":"a\nb\n"}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/note.md"}),
+    ));
+    assert_eq!(body, json!({"content": "a\nb\n"}));
+}
+
+#[test]
+fn read_range_composes_with_backlinks() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"a\nb\nc\n"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","content":"[[rust]]"}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md",
+               "offset":2,"limit":1,"backlinks":true}),
+    ));
+    assert_eq!(body["content"], "b\n");
+    assert_eq!(body["total_lines"], 3);
+    assert_eq!(body["backlinks"], json!(["Agents/notes/memo.md"]));
+}
+
+#[test]
+fn read_range_slices_the_link_stripped_view() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    // The link target must exist for [[rust]] to resolve, expand on write, and
+    // be stored in the suffixed on-disk form.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"seed"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md",
+               "content":"one\ntwo\nsee [[rust]]\nfour"}),
+    )
+    .unwrap();
+    let stored = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/notes/memo.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert!(stored.contains("[[rust.jarvis.tony]]"), "stored: {stored}");
+
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","offset":3,"limit":1}),
+    ));
+    assert_eq!(body["content"], "see [[rust]]\n");
+    assert_eq!(body["total_lines"], 4);
+    // Line numbers match a whole-note read.
+    let whole = read_clean(&tb, "Agents/notes/memo.md");
+    assert_eq!(
+        whole.split_inclusive('\n').nth(2).unwrap(),
+        body["content"].as_str().unwrap()
+    );
+}
+
 // --- read_memory_notes ---
 
 #[test]
@@ -1181,6 +1373,129 @@ fn batch_read_non_string_entry_is_invalid_argument() {
         ),
         "invalid_argument",
     );
+}
+
+#[test]
+fn batch_read_mixed_string_and_ranged_entries() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"own"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/diary/2026-06-10.md","content":numbered_note(10)}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":["Agents/topics/rust.md",
+                        {"path":"Agents/diary/2026-06-10.md","offset":1,"limit":5}]}),
+    ));
+    assert_eq!(
+        body["notes"][0],
+        json!({"path": "Agents/topics/rust.md", "content": "own"})
+    );
+    assert_eq!(
+        body["notes"][1],
+        json!({"path": "Agents/diary/2026-06-10.md",
+               "content": numbered_lines(1, 5), "total_lines": 10})
+    );
+}
+
+#[test]
+fn batch_read_ranged_entry_past_eof_succeeds() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/short.md","content":numbered_note(3)}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/other.md","content":"fine"}),
+    )
+    .unwrap();
+
+    let body = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":[{"path":"Agents/topics/short.md","offset":9},
+                        "Agents/topics/other.md"]}),
+    ));
+    assert_eq!(
+        body["notes"][0],
+        json!({"path": "Agents/topics/short.md", "content": "", "total_lines": 3})
+    );
+    assert_eq!(
+        body["notes"][1],
+        json!({"path": "Agents/topics/other.md", "content": "fine"})
+    );
+}
+
+#[test]
+fn batch_read_malformed_entry_rejects_the_whole_call() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/ok.md","content":"fine"}),
+    )
+    .unwrap();
+    for entry in [
+        json!({"offset": 3}),
+        json!({"path": "Agents/topics/ok.md", "offset": 0}),
+        json!({"path": "Agents/topics/ok.md", "limit": 0}),
+        json!({"path": "Agents/topics/ok.md", "unexpected": true}),
+        json!({"path": 7}),
+    ] {
+        assert_code(
+            call(
+                &tb,
+                "read_memory_notes",
+                json!({"agent":"jarvis","user":"tony","paths":["Agents/topics/ok.md", entry]}),
+            ),
+            "invalid_argument",
+        );
+    }
+}
+
+#[test]
+fn batch_read_range_parity_with_single_read() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","content":numbered_note(50)}),
+    )
+    .unwrap();
+
+    let single = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/long.md","offset":11,"limit":10}),
+    ));
+    let batch = structured(call(
+        &tb,
+        "read_memory_notes",
+        json!({"agent":"jarvis","user":"tony",
+               "paths":[{"path":"Agents/topics/long.md","offset":11,"limit":10}]}),
+    ));
+    assert_eq!(batch["notes"][0]["content"], single["content"]);
+    assert_eq!(batch["notes"][0]["total_lines"], single["total_lines"]);
 }
 
 // --- rename_memory_note ---

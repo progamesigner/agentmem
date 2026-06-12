@@ -111,14 +111,40 @@ struct PathFields {
     path: String,
 }
 
+/// One `read_memory_notes` entry: a bare virtual path (the whole note) or an
+/// object requesting a line range of that note.
+#[derive(JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum BatchReadEntry {
+    /// A virtual path, relative to the vault root; the whole note is returned.
+    Path(String),
+    /// A path with an optional line range, with the same `offset`/`limit`
+    /// semantics as `read_memory_note`; the entry's result additionally carries
+    /// `total_lines`.
+    Ranged {
+        /// The virtual path of the note, relative to the vault root.
+        path: String,
+        /// 1-based line number of the first returned line.
+        #[schemars(range(min = 1))]
+        offset: Option<u64>,
+        /// Maximum number of lines to return (default: all remaining lines).
+        #[schemars(range(min = 1))]
+        limit: Option<u64>,
+    },
+}
+
 #[derive(JsonSchema)]
 #[allow(dead_code)]
 struct BatchReadFields {
-    /// 1 to 20 virtual paths, each relative to the vault root. The result carries
-    /// one `notes` entry per requested path, in request order: `{ path, content }`
-    /// on success or `{ path, error: { code, message } }` on failure. Per-path
-    /// failures (e.g. `not_found`, `path_not_permitted`) do not fail the call.
-    paths: Vec<String>,
+    /// 1 to 20 entries, each either a vault-root-relative virtual path string
+    /// (the whole note) or an object `{ path, offset?, limit? }` requesting a
+    /// line range of that note. The result carries one `notes` entry per
+    /// requested path, in request order: `{ path, content }` on success or
+    /// `{ path, error: { code, message } }` on failure, plus `total_lines` when
+    /// a range was requested. Per-path failures (e.g. `not_found`,
+    /// `path_not_permitted`) do not fail the call.
+    paths: Vec<BatchReadEntry>,
 }
 
 #[derive(JsonSchema)]
@@ -126,6 +152,16 @@ struct BatchReadFields {
 struct ReadFields {
     /// The virtual path of the note, relative to the vault root.
     path: String,
+    /// Optional 1-based line number of the first returned line (default 1).
+    /// When `offset` or `limit` is supplied, the structured result additionally
+    /// carries `total_lines` — the line count of the full note — and an offset
+    /// past the last line returns empty content rather than an error.
+    #[schemars(range(min = 1))]
+    offset: Option<u64>,
+    /// Optional maximum number of lines to return, counted from `offset`
+    /// (default: all remaining lines).
+    #[schemars(range(min = 1))]
+    limit: Option<u64>,
     /// When `true`, the structured result additionally carries a `backlinks`
     /// array: the clean virtual path of every visible note containing at least
     /// one link that resolves to this note, deduplicated and sorted ascending.
@@ -738,12 +774,38 @@ impl Toolbox {
         Ok(self.strip_links_for(scope, &self.read_raw(scope, vpath)?))
     }
 
+    /// [`Self::read_one`] plus the optional line range: the slice is applied to
+    /// the agent-facing content (after the link strip), so line numbers match a
+    /// whole-note read and a suffix never leaks through a slice boundary.
+    /// Returns the content and, only when a range was requested, the full
+    /// note's line count. Shared by `read_memory_note` and `read_memory_notes`
+    /// so range semantics cannot drift.
+    fn read_one_ranged(
+        &self,
+        scope: &str,
+        vpath: &VirtualPath,
+        range: Option<LineRange>,
+    ) -> Result<(String, Option<u64>), AgentmemError> {
+        let content = self.read_one(scope, vpath)?;
+        Ok(match range {
+            Some(range) => {
+                let (sliced, total) = slice_lines(&content, range);
+                (sliced, Some(total))
+            }
+            None => (content, None),
+        })
+    }
+
     fn read_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["path", "backlinks"])?;
+        let scope = self.resolve_scope(args, &["path", "backlinks", "offset", "limit"])?;
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
         let want_backlinks = opt_bool(args, "backlinks")?.unwrap_or(false);
-        let content = self.read_one(&scope, &vpath)?;
+        let range = opt_line_range(args)?;
+        let (content, total_lines) = self.read_one_ranged(&scope, &vpath, range)?;
         let mut structured = json!({ "content": &content });
+        if let Some(total) = total_lines {
+            structured["total_lines"] = json!(total);
+        }
         if want_backlinks {
             structured["backlinks"] = json!(self.collect_backlinks(&scope, &vpath)?);
         }
@@ -754,22 +816,42 @@ impl Toolbox {
 
     fn read_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         let scope = self.resolve_scope(args, &["paths"])?;
-        let paths = require_str_array(args, "paths")?;
-        if paths.is_empty() {
+        let entries = match args.get("paths") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(parse_batch_entry)
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(_) => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "argument 'paths' must be an array".to_string(),
+                });
+            }
+            None => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "missing required argument 'paths'".to_string(),
+                });
+            }
+        };
+        if entries.is_empty() {
             return Err(AgentmemError::InvalidArgument {
                 message: "argument 'paths' must contain at least one path".to_string(),
             });
         }
-        if paths.len() > MAX_BATCH_READ {
+        if entries.len() > MAX_BATCH_READ {
             return Err(AgentmemError::InvalidArgument {
                 message: format!("argument 'paths' must not exceed {MAX_BATCH_READ} entries"),
             });
         }
-        let notes: Vec<Value> = paths
+        let notes: Vec<Value> = entries
             .iter()
-            .map(|path| {
-                match VirtualPath::new(path).and_then(|vpath| self.read_one(&scope, &vpath)) {
-                    Ok(content) => json!({ "path": path, "content": content }),
+            .map(|(path, range)| {
+                match VirtualPath::new(path)
+                    .and_then(|vpath| self.read_one_ranged(&scope, &vpath, *range))
+                {
+                    Ok((content, Some(total))) => {
+                        json!({ "path": path, "content": content, "total_lines": total })
+                    }
+                    Ok((content, None)) => json!({ "path": path, "content": content }),
                     Err(err) => json!({
                         "path": path,
                         "error": { "code": err.code().as_str(), "message": err.to_string() },
@@ -1344,30 +1426,6 @@ fn require_str(args: &JsonObject, key: &str) -> Result<String, AgentmemError> {
     }
 }
 
-/// Require an array-of-strings argument, erroring with `invalid_argument` when
-/// absent, not an array, or containing a non-string entry.
-fn require_str_array(args: &JsonObject, key: &str) -> Result<Vec<String>, AgentmemError> {
-    let value = args
-        .get(key)
-        .ok_or_else(|| AgentmemError::InvalidArgument {
-            message: format!("missing required argument '{key}'"),
-        })?;
-    let Value::Array(items) = value else {
-        return Err(AgentmemError::InvalidArgument {
-            message: format!("argument '{key}' must be an array"),
-        });
-    };
-    items
-        .iter()
-        .map(|item| match item {
-            Value::String(s) => Ok(s.clone()),
-            _ => Err(AgentmemError::InvalidArgument {
-                message: format!("argument '{key}' entries must be strings"),
-            }),
-        })
-        .collect()
-}
-
 /// Require a JSON-object argument, erroring with `invalid_argument` when absent
 /// or of the wrong type.
 fn require_object(args: &JsonObject, key: &str) -> Result<Map<String, Value>, AgentmemError> {
@@ -1458,6 +1516,89 @@ fn opt_u64(args: &JsonObject, key: &str) -> Result<Option<u64>, AgentmemError> {
     }
 }
 
+/// A requested 1-based line range over a note's agent-facing content.
+#[derive(Clone, Copy)]
+struct LineRange {
+    /// The 1-based line number of the first returned line.
+    offset: u64,
+    /// The maximum number of lines returned (`None`: all remaining lines).
+    limit: Option<u64>,
+}
+
+/// Parse an optional positive integer, rejecting `0` with `invalid_argument`
+/// (schema-level `minimum` keywords are not enforced server-side for all
+/// clients).
+fn opt_positive(args: &JsonObject, key: &str) -> Result<Option<u64>, AgentmemError> {
+    match opt_u64(args, key)? {
+        Some(0) => Err(AgentmemError::InvalidArgument {
+            message: format!("argument '{key}' must be a positive integer"),
+        }),
+        other => Ok(other),
+    }
+}
+
+/// Extract the optional `offset`/`limit` line range from `args`. Returns `None`
+/// when neither is supplied — the whole-note read, whose response must stay
+/// byte-identical to prior behavior.
+fn opt_line_range(args: &JsonObject) -> Result<Option<LineRange>, AgentmemError> {
+    let offset = opt_positive(args, "offset")?;
+    let limit = opt_positive(args, "limit")?;
+    if offset.is_none() && limit.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(LineRange {
+        offset: offset.unwrap_or(1),
+        limit,
+    }))
+}
+
+/// Parse one `read_memory_notes` entry: a bare path string or a
+/// `{ path, offset?, limit? }` object. A malformed entry is a call-level
+/// `invalid_argument` — per-entry errors are reserved for path resolution and IO.
+fn parse_batch_entry(entry: &Value) -> Result<(String, Option<LineRange>), AgentmemError> {
+    match entry {
+        Value::String(path) => Ok((path.clone(), None)),
+        Value::Object(fields) => {
+            for key in fields.keys() {
+                if !matches!(key.as_str(), "path" | "offset" | "limit") {
+                    return Err(AgentmemError::InvalidArgument {
+                        message: format!("unexpected key '{key}' in 'paths' entry"),
+                    });
+                }
+            }
+            let Some(Value::String(path)) = fields.get("path") else {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "object entries in 'paths' must carry a string 'path'".to_string(),
+                });
+            };
+            Ok((path.clone(), opt_line_range(fields)?))
+        }
+        _ => Err(AgentmemError::InvalidArgument {
+            message:
+                "argument 'paths' entries must be strings or { path, offset?, limit? } objects"
+                    .to_string(),
+        }),
+    }
+}
+
+/// Slice `content` to a 1-based line range. Lines are delimited by `\n` with
+/// delimiters preserved — `\r\n` content keeps the `\r` inside its line, and a
+/// missing final newline still counts as a final line — so concatenating
+/// consecutive slices reproduces the content byte-for-byte. Returns the sliced
+/// content and the total line count of the full content (`0` for an empty
+/// note); an offset past the last line yields empty content.
+fn slice_lines(content: &str, range: LineRange) -> (String, u64) {
+    let total = content.split_inclusive('\n').count() as u64;
+    let lines = content
+        .split_inclusive('\n')
+        .skip(range.offset as usize - 1);
+    let sliced = match range.limit {
+        Some(limit) => lines.take(limit as usize).collect(),
+        None => lines.collect(),
+    };
+    (sliced, total)
+}
+
 /// Generate the tool-specific field schema fragment via `schemars`, with all
 /// subschemas inlined so enums appear directly rather than via `$ref`.
 fn fields_schema<T: JsonSchema>() -> JsonObject {
@@ -1520,12 +1661,12 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
         ),
         tool(
             "read_memory_note",
-            "Read the UTF-8 contents of a single memory note by its virtual path. Set `backlinks` to also return the visible notes whose links resolve to it.",
+            "Read the UTF-8 contents of a single memory note by its virtual path. Optional `offset`/`limit` select a 1-based line range and add `total_lines` (the full note's line count) to the result. Set `backlinks` to also return the visible notes whose links resolve to it.",
             merge_schema(scheme, fields_schema::<ReadFields>()),
         ),
         tool(
             "read_memory_notes",
-            "Read up to 20 memory notes in one call. Returns one `notes` entry per requested path, in request order: `{ path, content }` on success or `{ path, error: { code, message } }` on failure. Per-path failures do not fail the call.",
+            "Read up to 20 memory notes in one call. Each `paths` entry is a virtual path string (whole note) or `{ path, offset?, limit? }` requesting a line range plus `total_lines`. Returns one `notes` entry per requested path, in request order: `{ path, content }` on success or `{ path, error: { code, message } }` on failure. Per-path failures do not fail the call.",
             merge_schema(scheme, fields_schema::<BatchReadFields>()),
         ),
         tool(
@@ -1626,5 +1767,54 @@ mod tests {
                 "input {raw:?}"
             );
         }
+    }
+
+    /// Shorthand for a `LineRange` with both bounds.
+    fn range(offset: u64, limit: Option<u64>) -> LineRange {
+        LineRange { offset, limit }
+    }
+
+    #[test]
+    fn slice_lines_returns_mid_file_range_with_delimiters() {
+        let content = "a\nb\nc\nd\n";
+        assert_eq!(
+            slice_lines(content, range(2, Some(2))),
+            ("b\nc\n".into(), 4)
+        );
+    }
+
+    #[test]
+    fn slice_lines_offset_alone_reads_to_the_end() {
+        assert_eq!(
+            slice_lines("a\nb\nc\n", range(2, None)),
+            ("b\nc\n".into(), 3)
+        );
+    }
+
+    #[test]
+    fn slice_lines_empty_note_has_zero_lines() {
+        assert_eq!(slice_lines("", range(1, None)), (String::new(), 0));
+    }
+
+    #[test]
+    fn slice_lines_missing_final_newline_counts_as_a_line() {
+        let content = "a\nb";
+        assert_eq!(slice_lines(content, range(2, Some(1))), ("b".into(), 2));
+        // Concatenating consecutive slices reproduces the content byte-for-byte.
+        let (first, _) = slice_lines(content, range(1, Some(1)));
+        let (second, _) = slice_lines(content, range(2, Some(1)));
+        assert_eq!(format!("{first}{second}"), content);
+    }
+
+    #[test]
+    fn slice_lines_keeps_crlf_inside_the_line() {
+        let content = "a\r\nb\r\nc";
+        assert_eq!(slice_lines(content, range(1, Some(1))), ("a\r\n".into(), 3));
+        assert_eq!(slice_lines(content, range(3, None)), ("c".into(), 3));
+    }
+
+    #[test]
+    fn slice_lines_offset_past_eof_is_empty() {
+        assert_eq!(slice_lines("a\nb\n", range(5, None)), (String::new(), 2));
     }
 }
