@@ -206,7 +206,7 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 | `evolve_core_persona` | Atomic write to one of the five foundational files (`persona`/`prompt`/`rules`/`user`/`memory`), selected by `which`. Enforces line caps: `USER.md` ≤ 100, `MEMORY.md` ≤ 200. |
 | `update_task_heartbeat` | Atomic write to `HEARTBEAT.md`. |
 | `append_diary_entry` | Append a timestamped section to `diary/<YYYY-MM-DD>.md`; a newly created file opens with a `# <YYYY-MM-DD>` H1, and an optional `title` makes the heading `## <HH:MM:SS> — <title>`. |
-| `recall_memory_notes` | Search notes by content within the caller's visible set; returns ranked `{ path, score (0–1), snippets }`. Supply at least one of `query` (full-text), `regex`, or `filters` (frontmatter properties). Paginated like `list_memory_notes`. Present unless `AGENTMEM_RECALL_BACKEND=off`. |
+| `recall_memory_notes` | Search notes by content within the caller's visible set; returns ranked `{ path, score (0–1), snippets, modified_at }`. Supply at least one of `query` (full-text), `regex`, `filters` (frontmatter properties), or the `modified_after`/`modified_before` time bounds. Paginated like `list_memory_notes`. Present unless `AGENTMEM_RECALL_BACKEND=off`. |
 
 Every tool's input schema includes the scope parameters derived from the active
 scheme; introspect them via the standard MCP `tools/list` call.
@@ -240,6 +240,18 @@ Two backends, selected by `AGENTMEM_RECALL_BACKEND`:
 
 Cross-index scores are normalized to 0–1 per index before merging. On a large
 vault the eager cold build is gated by `GET /readyz` (see [Container image](#container-image)); a regex-only query is byte-capped and flags truncation in its result.
+
+Every hit carries `modified_at` (RFC 3339, UTC), and the optional
+`modified_after`/`modified_before` arguments bound results by modification time.
+Each accepts an RFC 3339 timestamp or a bare `YYYY-MM-DD` date interpreted as
+start of day in `AGENTMEM_TIMEZONE`, forming a half-open interval
+(`modified_after ≤ mtime < modified_before`). A time bound is a sufficient
+predicate on its own: with no `query`/`regex`/`filters`, hits come straight from
+the in-memory manifest with no content scan, ordered by `modified_at` descending
+with `score: 1.0` and empty snippets — "what did I work on recently?" costs no
+reads. Combined with a content predicate, the bounds filter the hits and score
+ordering stands. The compared time is the filesystem mtime — restores and sync
+tools may carry old timestamps — and the behavior is identical on both backends.
 
 Inside the agents folder the root level is **wrapper-only**: the core files
 (`PERSONA.md`, `PROMPT.md`, `RULES.md`, `USER.md`, `MEMORY.md`, `HEARTBEAT.md`)

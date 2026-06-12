@@ -72,6 +72,11 @@ pub struct RecallQuery {
     pub limit: u64,
     /// Pagination offset, decoded from an opaque cursor.
     pub offset: u64,
+    /// Include only notes whose mtime is at or after this instant (half-open:
+    /// `modified_after ≤ mtime < modified_before`).
+    pub modified_after: Option<SystemTime>,
+    /// Include only notes whose mtime is strictly before this instant.
+    pub modified_before: Option<SystemTime>,
 }
 
 /// One ranked recall hit returned to the agent.
@@ -80,6 +85,9 @@ pub struct RecallHit {
     pub path: String,
     pub score: f32,
     pub snippets: Vec<String>,
+    /// The note's last modification time (RFC 3339, UTC), sourced from the
+    /// index manifest; `None` when the entry vanished between scan and merge.
+    pub modified_at: Option<String>,
 }
 
 /// A page of recall hits.
@@ -333,6 +341,11 @@ impl RecallEngine {
             });
         }
         let compiled = compile_query(query)?;
+        // A query with no content predicate is answered from the manifests alone
+        // (a time-only query); no backend scan runs.
+        let has_content =
+            compiled.raw_text.is_some() || compiled.regex.is_some() || !compiled.filters.is_empty();
+        let time_bounded = query.modified_after.is_some() || query.modified_before.is_some();
 
         let mut state = self.state.lock().expect("recall state poisoned");
         self.ensure_built(&mut state);
@@ -343,30 +356,69 @@ impl RecallEngine {
 
         let mut merged: Vec<(f32, RawHit)> = Vec::new();
         let mut truncated = false;
+        // clean_path → mtime from the opened manifests, backing the time bounds
+        // and each hit's `modified_at` — no filesystem stats on the query path.
+        let mut mtimes: HashMap<String, SystemTime> = HashMap::new();
 
         if include_scope {
             self.ensure_scope_resident(&mut state, rendered_scope);
             if let Some(idx) = state.scopes.get_mut(rendered_scope) {
                 Self::refresh(idx, force, self.config.freshness, &self.storage);
                 idx.last_access = Instant::now();
+                if has_content {
+                    let scan = idx
+                        .backend
+                        .query(&compiled, self.config.regex_scan_byte_cap);
+                    truncated |= scan.truncated;
+                    push_normalized(&mut merged, scan.hits);
+                }
+                for meta in idx.manifest.values() {
+                    mtimes.insert(meta.clean_path.clone(), meta.mtime);
+                }
+            }
+        }
+        if include_shared && let Some(idx) = state.shared.as_mut() {
+            Self::refresh(idx, force, self.config.freshness, &self.storage);
+            if has_content {
                 let scan = idx
                     .backend
                     .query(&compiled, self.config.regex_scan_byte_cap);
                 truncated |= scan.truncated;
                 push_normalized(&mut merged, scan.hits);
             }
-        }
-        if include_shared && let Some(idx) = state.shared.as_mut() {
-            Self::refresh(idx, force, self.config.freshness, &self.storage);
-            let scan = idx
-                .backend
-                .query(&compiled, self.config.regex_scan_byte_cap);
-            truncated |= scan.truncated;
-            push_normalized(&mut merged, scan.hits);
+            for meta in idx.manifest.values() {
+                mtimes.insert(meta.clean_path.clone(), meta.mtime);
+            }
         }
         drop(state);
 
         self.evict_if_needed();
+
+        if !has_content {
+            // Time-only: every manifest entry inside the bounds is a hit, with a
+            // uniform score and no snippets (nothing was matched to excerpt).
+            for (clean, mtime) in &mtimes {
+                if within_time_bounds(query, *mtime) {
+                    merged.push((
+                        1.0,
+                        RawHit {
+                            clean_path: clean.clone(),
+                            raw_score: 1.0,
+                            snippets: Vec::new(),
+                        },
+                    ));
+                }
+            }
+        } else if time_bounded {
+            // Content hits: the time bounds filter the merged set. A hit whose
+            // manifest entry vanished mid-query has no provable mtime and is
+            // dropped.
+            merged.retain(|(_, h)| {
+                mtimes
+                    .get(&h.clean_path)
+                    .is_some_and(|mtime| within_time_bounds(query, *mtime))
+            });
+        }
 
         // Path-prefix filter, mirroring list_memory_notes (prefix relative to the
         // agents folder).
@@ -382,12 +434,22 @@ impl RecallEngine {
                 .retain(|(_, h)| h.clean_path == effective || h.clean_path.starts_with(&with_sep));
         }
 
-        // Sort by normalized score (desc), then path (asc) for stable ordering.
-        merged.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.1.clean_path.cmp(&b.1.clean_path))
-        });
+        if has_content {
+            // Sort by normalized score (desc), then path (asc) for stable ordering.
+            merged.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.1.clean_path.cmp(&b.1.clean_path))
+            });
+        } else {
+            // Time-only: most recently modified first, then path (asc).
+            merged.sort_by(|a, b| {
+                mtimes
+                    .get(&b.1.clean_path)
+                    .cmp(&mtimes.get(&a.1.clean_path))
+                    .then_with(|| a.1.clean_path.cmp(&b.1.clean_path))
+            });
+        }
 
         let total = merged.len() as u64;
         let start = query.offset.min(total) as usize;
@@ -411,6 +473,7 @@ impl RecallEngine {
                         crate::wikilink::strip_links(s, rendered_scope, self.storage.resolver())
                     })
                     .collect(),
+                modified_at: mtimes.get(&h.clean_path).map(|m| format_modified_at(*m)),
             })
             .collect();
 
@@ -641,6 +704,18 @@ fn compile_query(query: &RecallQuery) -> Result<CompiledQuery, AgentmemError> {
     })
 }
 
+/// Half-open time-bound check: `modified_after ≤ mtime < modified_before`.
+fn within_time_bounds(query: &RecallQuery, mtime: SystemTime) -> bool {
+    query.modified_after.is_none_or(|after| mtime >= after)
+        && query.modified_before.is_none_or(|before| mtime < before)
+}
+
+/// Format a manifest mtime as an RFC 3339 UTC timestamp.
+fn format_modified_at(mtime: SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(mtime)
+        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+}
+
 /// Normalize one index's raw scores to 0–1 (by its own max) and append to `merged`.
 fn push_normalized(merged: &mut Vec<(f32, RawHit)>, hits: Vec<RawHit>) {
     let max = hits.iter().map(|h| h.raw_score).fold(0.0_f32, f32::max);
@@ -702,6 +777,8 @@ mod tests {
             path_prefix: None,
             limit: 100,
             offset: 0,
+            modified_after: None,
+            modified_before: None,
         }
     }
 
@@ -713,7 +790,36 @@ mod tests {
             path_prefix: None,
             limit: 100,
             offset: 0,
+            modified_after: None,
+            modified_before: None,
         }
+    }
+
+    fn time_query(after: Option<SystemTime>, before: Option<SystemTime>) -> RecallQuery {
+        RecallQuery {
+            text: None,
+            regex: None,
+            filters: Vec::new(),
+            path_prefix: None,
+            limit: 100,
+            offset: 0,
+            modified_after: after,
+            modified_before: before,
+        }
+    }
+
+    /// An instant `secs` after the Unix epoch.
+    fn t(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+    }
+
+    fn set_mtime(path: &std::path::Path, secs: u64) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t(secs))
+            .unwrap();
     }
 
     #[test]
@@ -830,6 +936,147 @@ mod tests {
                 .hits
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn time_only_recall_returns_bounded_set_in_recency_order() {
+        let (tmp, engine) = engine();
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.tony/topics/rust.jarvis.tony.md"),
+            1_000,
+        );
+        set_mtime(&tmp.path().join("Actions/release.md"), 3_000);
+        // Sam's note is inside the bounds but structurally unreachable.
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.sam/topics/secret.jarvis.sam.md"),
+            5_000,
+        );
+
+        let results = engine
+            .recall("jarvis.tony", BOTH, &time_query(Some(t(500)), None))
+            .unwrap();
+        let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["Actions/release.md", "Agents/topics/rust.md"]);
+        for hit in &results.hits {
+            assert_eq!(hit.score, 1.0);
+            assert!(hit.snippets.is_empty());
+        }
+        assert_eq!(
+            results.hits[1].modified_at.as_deref(),
+            Some("1970-01-01T00:16:40Z")
+        );
+
+        // Tightening the lower bound drops the older note.
+        let results = engine
+            .recall("jarvis.tony", BOTH, &time_query(Some(t(2_000)), None))
+            .unwrap();
+        let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["Actions/release.md"]);
+    }
+
+    #[test]
+    fn time_bounds_are_half_open() {
+        let (tmp, engine) = engine();
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.tony/topics/rust.jarvis.tony.md"),
+            1_000,
+        );
+        set_mtime(&tmp.path().join("Actions/release.md"), 3_000);
+
+        // mtime == after is included; mtime == before is excluded.
+        let results = engine
+            .recall(
+                "jarvis.tony",
+                BOTH,
+                &time_query(Some(t(1_000)), Some(t(3_000))),
+            )
+            .unwrap();
+        let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["Agents/topics/rust.md"]);
+    }
+
+    #[test]
+    fn time_bounds_filter_content_hits_and_keep_score_order() {
+        let (tmp, engine) = engine();
+        // An older note that matches twice, so score order disagrees with recency.
+        tmp.child("Agents/jarvis.tony/topics/double.jarvis.tony.md")
+            .write_str("borrow and borrow again.")
+            .unwrap();
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.tony/topics/double.jarvis.tony.md"),
+            1_000,
+        );
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.tony/topics/rust.jarvis.tony.md"),
+            2_000,
+        );
+        set_mtime(&tmp.path().join("Actions/release.md"), 9_000);
+
+        let mut q = query("borrow");
+        q.modified_before = Some(t(5_000));
+        let results = engine.recall("jarvis.tony", BOTH, &q).unwrap();
+        let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
+        // Score order (double match first), not recency; the shared note is out
+        // of range.
+        assert_eq!(
+            paths,
+            vec!["Agents/topics/double.md", "Agents/topics/rust.md"]
+        );
+        assert!(!results.hits[0].snippets.is_empty());
+        assert!(results.hits[0].modified_at.is_some());
+    }
+
+    #[cfg(feature = "recall-tantivy")]
+    #[test]
+    fn tantivy_time_only_recall_matches_simple_semantics() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("Agents/jarvis.tony/topics/old.jarvis.tony.md")
+            .write_str("old note")
+            .unwrap();
+        tmp.child("Agents/jarvis.tony/topics/new.jarvis.tony.md")
+            .write_str("new note")
+            .unwrap();
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.tony/topics/old.jarvis.tony.md"),
+            1_000,
+        );
+        set_mtime(
+            &tmp.path()
+                .join("Agents/jarvis.tony/topics/new.jarvis.tony.md"),
+            3_000,
+        );
+        let resolver = PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            camino::Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        );
+        let storage = Arc::new(Storage::new(resolver, true, false, &[]));
+        let config = RecallConfig {
+            backend: RecallBackendKind::Tantivy,
+            watch_debounce: std::time::Duration::from_millis(0),
+            regex_scan_byte_cap: usize::MAX,
+            max_resident_scopes: 256,
+            freshness: std::time::Duration::from_millis(0),
+        };
+        let engine = RecallEngine::new(storage, config).unwrap();
+
+        let results = engine
+            .recall(
+                "jarvis.tony",
+                BOTH,
+                &time_query(Some(t(1_000)), Some(t(3_000))),
+            )
+            .unwrap();
+        let paths: Vec<&str> = results.hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["Agents/topics/old.md"]);
+        assert_eq!(results.hits[0].score, 1.0);
+        assert!(results.hits[0].snippets.is_empty());
     }
 
     #[test]

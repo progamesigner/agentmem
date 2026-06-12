@@ -24,6 +24,11 @@ use serde_json::{Value, json};
 
 /// A toolbox with the `simple` recall backend enabled over the same vault.
 fn recall_toolbox(tmp: &TempDir) -> Toolbox {
+    recall_toolbox_tz(tmp, Tz::UTC)
+}
+
+/// A recall toolbox with a configurable timezone (interprets date-only time bounds).
+fn recall_toolbox_tz(tmp: &TempDir, timezone: Tz) -> Toolbox {
     let mk = || {
         PathResolver::new(
             tmp.path().canonicalize().unwrap(),
@@ -44,7 +49,7 @@ fn recall_toolbox(tmp: &TempDir) -> Toolbox {
     Toolbox::new(
         storage,
         Policy::Namespaced,
-        Tz::UTC,
+        timezone,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
         recall,
     )
@@ -2585,6 +2590,125 @@ fn recall_finds_a_written_note_by_content() {
     let top = &hits[0];
     assert!(top["score"].as_f64().unwrap() > 0.0 && top["score"].as_f64().unwrap() <= 1.0);
     assert!(!top["snippets"].as_array().unwrap().is_empty());
+    // Ordinary content hits carry the note's mtime as RFC 3339 UTC.
+    let modified_at = top["modified_at"].as_str().expect("modified_at");
+    assert!(chrono::DateTime::parse_from_rfc3339(modified_at).is_ok());
+}
+
+/// Set a note's mtime to the instant named by an RFC 3339 string.
+fn set_mtime(tmp: &TempDir, rel: &str, rfc3339: &str) {
+    let t: std::time::SystemTime = chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .unwrap()
+        .into();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(tmp.path().join(rel))
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
+}
+
+#[test]
+fn recall_time_only_returns_recent_notes_in_recency_order() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    for (name, body) in [("old", "alpha"), ("new", "beta")] {
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":format!("Agents/topics/{name}.md"),"content":body}),
+        )
+        .unwrap();
+    }
+    set_mtime(
+        &tmp,
+        "Agents/jarvis.tony/topics/old.jarvis.tony.md",
+        "2026-06-01T00:00:00Z",
+    );
+    set_mtime(
+        &tmp,
+        "Agents/jarvis.tony/topics/new.jarvis.tony.md",
+        "2026-06-02T00:00:00Z",
+    );
+
+    // A bound equal to the older mtime is inclusive (half-open interval).
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","modified_after":"2026-06-01T00:00:00Z"}),
+    ));
+    let hits = out["hits"].as_array().unwrap();
+    let paths: Vec<&str> = hits.iter().map(|h| h["path"].as_str().unwrap()).collect();
+    assert_eq!(paths, vec!["Agents/topics/new.md", "Agents/topics/old.md"]);
+    for hit in hits {
+        assert_eq!(hit["score"], 1.0);
+        assert!(hit["snippets"].as_array().unwrap().is_empty());
+    }
+    assert_eq!(hits[0]["modified_at"], "2026-06-02T00:00:00Z");
+
+    // A `modified_before` equal to the newer mtime excludes it.
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","modified_before":"2026-06-02T00:00:00Z"}),
+    ));
+    let paths: Vec<&str> = out["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, vec!["Agents/topics/old.md"]);
+}
+
+#[test]
+fn recall_date_only_bound_respects_configured_timezone() {
+    // 20:00 UTC on June 9 is already June 10 in Asia/Taipei (UTC+8).
+    let write_note = |tb: &Toolbox| {
+        call(
+            tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":"x"}),
+        )
+        .unwrap();
+    };
+    let query = json!({"agent":"jarvis","user":"tony","modified_after":"2026-06-10"});
+
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox_tz(&tmp, Tz::Asia__Taipei);
+    write_note(&tb);
+    set_mtime(
+        &tmp,
+        "Agents/jarvis.tony/topics/n.jarvis.tony.md",
+        "2026-06-09T20:00:00Z",
+    );
+    let out = structured(call(&tb, "recall_memory_notes", query.clone()));
+    assert_eq!(out["hits"].as_array().unwrap().len(), 1);
+
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox_tz(&tmp, Tz::UTC);
+    write_note(&tb);
+    set_mtime(
+        &tmp,
+        "Agents/jarvis.tony/topics/n.jarvis.tony.md",
+        "2026-06-09T20:00:00Z",
+    );
+    let out = structured(call(&tb, "recall_memory_notes", query));
+    assert!(out["hits"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn recall_invalid_time_bound_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "recall_memory_notes",
+            json!({"agent":"jarvis","user":"tony","modified_after":"last tuesday"}),
+        ),
+        "invalid_argument",
+    );
 }
 
 #[test]
@@ -2614,7 +2738,7 @@ fn recall_does_not_cross_scope_boundaries() {
 }
 
 #[test]
-fn recall_requires_a_query_regex_or_filter() {
+fn recall_requires_a_content_or_time_predicate() {
     let tmp = TempDir::new().unwrap();
     let tb = recall_toolbox(&tmp);
     assert_code(

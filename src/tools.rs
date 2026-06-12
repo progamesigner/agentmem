@@ -12,8 +12,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
-use chrono::Utc;
+use chrono::{LocalResult, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
 use rmcp::model::{CallToolResult, Content, JsonObject, Tool};
 use schemars::JsonSchema;
@@ -244,6 +245,18 @@ struct RecallFields {
     /// Frontmatter property filters. Requires the tantivy backend; rejected with
     /// `unsupported` on the simple backend.
     filters: Option<Vec<PropertyFilterField>>,
+    /// Include only notes modified at or after this time. Accepts an RFC 3339
+    /// timestamp, or a bare `YYYY-MM-DD` date interpreted as start of day in the
+    /// configured `AGENTMEM_TIMEZONE`. Bounds are half-open
+    /// (`modified_after ≤ mtime < modified_before`) and compare the filesystem
+    /// mtime, which restores and sync tools may have back-dated. Counts as a
+    /// sufficient predicate on its own: with no `query`/`regex`/`filters`, hits
+    /// are ordered by `modified_at` descending with `score: 1.0` and empty
+    /// `snippets`.
+    modified_after: Option<String>,
+    /// Include only notes modified strictly before this time. Same accepted
+    /// formats, half-open semantics, and mtime caveat as `modified_after`.
+    modified_before: Option<String>,
     /// Optional virtual-path prefix, relative to the agents folder, to filter by.
     path_prefix: Option<String>,
     /// Maximum number of hits to return (default 200, maximum 1000).
@@ -1067,6 +1080,8 @@ impl Toolbox {
                 "query",
                 "regex",
                 "filters",
+                "modified_after",
+                "modified_before",
                 "path_prefix",
                 "limit",
                 "cursor",
@@ -1076,10 +1091,19 @@ impl Toolbox {
         let text = opt_str(args, "query")?;
         let regex = opt_str(args, "regex")?;
         let filters = parse_filters(args)?;
+        let modified_after = opt_time_bound(args, "modified_after", self.timezone)?;
+        let modified_before = opt_time_bound(args, "modified_before", self.timezone)?;
         let path_prefix = opt_str(args, "path_prefix")?;
-        if text.is_none() && regex.is_none() && filters.is_empty() {
+        if text.is_none()
+            && regex.is_none()
+            && filters.is_empty()
+            && modified_after.is_none()
+            && modified_before.is_none()
+        {
             return Err(AgentmemError::InvalidArgument {
-                message: "at least one of query, regex, or filters is required".to_string(),
+                message: "at least one of query, regex, filters, modified_after, or \
+                          modified_before is required"
+                    .to_string(),
             });
         }
         let limit = match opt_u64(args, "limit")? {
@@ -1104,13 +1128,21 @@ impl Toolbox {
             path_prefix,
             limit,
             offset,
+            modified_after,
+            modified_before,
         };
         let results = engine.recall(&scope, &regions, &query)?;
 
         let hits: Vec<Value> = results
             .hits
             .into_iter()
-            .map(|h| json!({ "path": h.path, "score": h.score, "snippets": h.snippets }))
+            .map(|h| {
+                let mut hit = json!({ "path": h.path, "score": h.score, "snippets": h.snippets });
+                if let Some(modified_at) = h.modified_at {
+                    hit["modified_at"] = json!(modified_at);
+                }
+                hit
+            })
             .collect();
         Ok(ok_json(json!({
             "hits": hits,
@@ -1244,6 +1276,46 @@ fn opt_bool(args: &JsonObject, key: &str) -> Result<Option<bool>, AgentmemError>
     }
 }
 
+/// Parse an optional `modified_after`/`modified_before` argument via
+/// [`parse_time_bound`].
+fn opt_time_bound(
+    args: &JsonObject,
+    key: &str,
+    tz: Tz,
+) -> Result<Option<SystemTime>, AgentmemError> {
+    match opt_str(args, key)? {
+        Some(raw) => Ok(Some(parse_time_bound(key, &raw, tz)?)),
+        None => Ok(None),
+    }
+}
+
+/// Parse a time bound: an RFC 3339 timestamp, or a bare `YYYY-MM-DD` date
+/// resolved to start of day in the configured timezone. Anything else is
+/// `invalid_argument`.
+fn parse_time_bound(key: &str, raw: &str, tz: Tz) -> Result<SystemTime, AgentmemError> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.into());
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let start = date.and_time(NaiveTime::MIN);
+        let resolved = match start.and_local_timezone(tz) {
+            LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => Some(dt),
+            // Midnight falls in a DST gap: the day starts when the clock resumes.
+            LocalResult::None => (start + chrono::Duration::hours(1))
+                .and_local_timezone(tz)
+                .earliest(),
+        };
+        if let Some(dt) = resolved {
+            return Ok(dt.into());
+        }
+    }
+    Err(AgentmemError::InvalidArgument {
+        message: format!(
+            "argument '{key}' must be an RFC 3339 timestamp or a YYYY-MM-DD date, got {raw:?}"
+        ),
+    })
+}
+
 fn opt_u64(args: &JsonObject, key: &str) -> Result<Option<u64>, AgentmemError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1374,9 +1446,49 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
     if recall_enabled {
         tools.push(tool(
             "recall_memory_notes",
-            "Search memory notes by content within the caller's visible set. Returns ranked hits as { path, score (0-1), snippets }. Supply at least one of `query` (full-text), `regex`, or `filters` (frontmatter properties; tantivy backend only). Paginated like list_memory_notes.",
+            "Search memory notes by content within the caller's visible set. Returns ranked hits as { path, score (0-1), snippets, modified_at }. Supply at least one of `query` (full-text), `regex`, `filters` (frontmatter properties; tantivy backend only), or the `modified_after`/`modified_before` time bounds. With time bounds alone, hits are ordered by recency. Paginated like list_memory_notes.",
             merge_schema(scheme, fields_schema::<RecallFields>()),
         ));
     }
     tools
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The instant named by an RFC 3339 string, for comparison.
+    fn st(rfc3339: &str) -> SystemTime {
+        chrono::DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn time_bound_parses_rfc3339_with_any_offset() {
+        let offset = parse_time_bound("modified_after", "2026-06-10T12:30:00+02:00", Tz::UTC);
+        assert_eq!(offset.unwrap(), st("2026-06-10T10:30:00Z"));
+        let zulu = parse_time_bound("modified_after", "2026-06-10T10:30:00Z", Tz::UTC);
+        assert_eq!(zulu.unwrap(), st("2026-06-10T10:30:00Z"));
+    }
+
+    #[test]
+    fn time_bound_resolves_bare_date_in_configured_timezone() {
+        let taipei = parse_time_bound("modified_after", "2026-06-10", Tz::Asia__Taipei);
+        assert_eq!(taipei.unwrap(), st("2026-06-09T16:00:00Z"));
+        let utc = parse_time_bound("modified_after", "2026-06-10", Tz::UTC);
+        assert_eq!(utc.unwrap(), st("2026-06-10T00:00:00Z"));
+    }
+
+    #[test]
+    fn time_bound_rejects_anything_else() {
+        for raw in ["last tuesday", "2026-06", "2026-06-10T12:00:00", ""] {
+            let err = parse_time_bound("modified_after", raw, Tz::UTC).unwrap_err();
+            assert_eq!(
+                err.code(),
+                crate::error::ErrorCode::InvalidArgument,
+                "input {raw:?}"
+            );
+        }
+    }
 }
