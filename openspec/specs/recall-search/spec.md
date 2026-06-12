@@ -175,8 +175,12 @@ the shared index. The system SHALL update the owning index synchronously on its 
 note writes, reconcile external edits via a filesystem watcher (debounced and
 ignore-filtered, routing each event to the owning index idempotently by file
 metadata), and run a periodic stat-diff reconcile as a backstop for missed watcher
-events. Idle per-scope indexes MAY be evicted under a configured memory bound and
-SHALL be rebuilt on next access.
+events. Idle per-scope indexes SHALL be evicted least-recently-accessed-first so
+that after a recall completes the number of resident per-scope indexes does not
+exceed the configured `max_resident_scopes` bound (a configured value of 0 is
+treated as 1), and evicted indexes SHALL be rebuilt on next access. The engine
+SHALL expose the current resident per-scope index count so the eviction bound is
+verifiable by tests and benchmarks.
 
 #### Scenario: Server write is reflected immediately
 - **WHEN** `write_memory_note` creates or replaces a note in the caller's scope
@@ -192,6 +196,12 @@ SHALL be rebuilt on next access.
 - **WHEN** a per-scope index has been evicted under the memory bound and a recall for
   that scope arrives
 - **THEN** the call blocks until the index is rebuilt and then returns correct results
+
+#### Scenario: Resident indexes stay within the eviction bound
+- **WHEN** the engine is configured with `max_resident_scopes` smaller than the
+  number of scopes in the vault and recalls are issued against each scope in turn
+- **THEN** after every recall completes, the resident per-scope index count reported
+  by the engine is at most `max_resident_scopes`
 
 ### Requirement: Normalized cross-index ranking
 The system SHALL normalize result scores per index before merging across indexes.

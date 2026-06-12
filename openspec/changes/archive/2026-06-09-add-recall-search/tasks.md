@@ -115,7 +115,8 @@ property filters. **P4** hardens regex. Regex ships with `simple` in P1.
 
 - [x] 11.1 Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test` — both with and
       without the `recall-tantivy` feature
-- [ ] 11.2 Benchmark eager cold-start build + warm query + watcher update over a synthetic
+- [x] 11.2 Benchmark eager cold-start build + warm query + watcher update over a synthetic
       tens-of-thousands-note vault; confirm RAM stays within the eviction bound
+      (completed by `2026-06-12-add-recall-benchmarks`)
 - [x] 11.3 Manually verify recall visibility matches `list`/`read` for two distinct scopes sharing
       one vault, and that `/readyz` flips green only after the build completes
