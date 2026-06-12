@@ -47,7 +47,7 @@
 ## 8. Verification
 
 - [x] 8.1 Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`
-- [ ] 8.2 Manually verify in an Obsidian vault that a persisted own-scope link resolves for a human browser
+- [x] 8.2 Manually verify in an Obsidian vault that a persisted own-scope link resolves for a human browser
 
 ## 9. Core-file coverage
 
