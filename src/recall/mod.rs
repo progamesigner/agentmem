@@ -240,6 +240,13 @@ impl RecallEngine {
         self.ready.load(Ordering::Acquire)
     }
 
+    /// The number of per-scope indexes currently resident in memory. Backs the
+    /// eviction-bound tests and benchmarks that verify `max_resident_scopes`.
+    pub fn resident_scope_count(&self) -> usize {
+        let state = self.state.lock().expect("recall state poisoned");
+        state.scopes.len()
+    }
+
     /// Eagerly build every scope index and the shared index, then mark ready. Safe
     /// to call repeatedly; the build runs once. This is also the block-until-ready
     /// path: a query arriving before the background build finishes takes the lock
@@ -845,6 +852,15 @@ mod tests {
         assert!(!engine.is_ready());
         engine.warm();
         assert!(engine.is_ready());
+    }
+
+    #[test]
+    fn resident_scope_count_tracks_the_warm_build() {
+        let (_tmp, engine) = engine();
+        assert_eq!(engine.resident_scope_count(), 0);
+        engine.warm();
+        // The fixture vault has two scope directories: jarvis.tony and jarvis.sam.
+        assert_eq!(engine.resident_scope_count(), 2);
     }
 
     #[test]
