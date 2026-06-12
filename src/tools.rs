@@ -121,8 +121,13 @@ struct ReadFields {
 struct WriteFields {
     /// The virtual path of the note, relative to the vault root.
     path: String,
-    /// The full new contents of the note.
+    /// The full new contents of the note; with `append: true`, the bytes to
+    /// append instead.
     content: String,
+    /// When `true`, `content` is appended to the existing note verbatim —
+    /// exact bytes, no implicit separator — and a missing note is created with
+    /// `content` as its full body. Absent or `false` replaces the whole note.
+    append: Option<bool>,
 }
 
 #[derive(JsonSchema)]
@@ -675,9 +680,10 @@ impl Toolbox {
     }
 
     fn write_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["path", "content"])?;
+        let scope = self.resolve_scope(args, &["path", "content", "append"])?;
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
         let content = require_str(args, "content")?;
+        let append = opt_bool(args, "append")?.unwrap_or(false);
         self.reject_if_root_reserved(&vpath)?;
         // Gate by policy before the link transform so a read-only/denied region
         // reports its policy error rather than a leak-guard `write_denied`.
@@ -687,7 +693,14 @@ impl Toolbox {
             .map_err(|e| Self::policy_err(e, &vpath))?;
         let content = self.expand_links_for(&scope, &vpath, &content)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
-            storage.write_atomic(physical, &content)
+            if append {
+                storage.read_modify_write(physical, |current| match current {
+                    Some(existing) => format!("{existing}{content}"),
+                    None => content.clone(),
+                })
+            } else {
+                storage.write_atomic(physical, &content)
+            }
         })
     }
 

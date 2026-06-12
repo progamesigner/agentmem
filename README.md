@@ -197,7 +197,7 @@ agents folder, there is no "outside" region, and wrapper tools resolve to
 |---|---|
 | `list_memory_notes` | Paginated listing of virtual paths visible to the scope (`limit` default 200, max 1000; opaque `cursor`; optional `path_prefix`). |
 | `read_memory_note` | Read a note by virtual path. |
-| `write_memory_note` | Atomic full-file write; returns the byte count. |
+| `write_memory_note` | Atomic full-file write; returns the byte count. With `append: true`, `content` is appended verbatim instead (exact bytes, no separator; a missing note is created), serialised under the per-target lock; the byte count is the note's total size after the write. |
 | `edit_memory_note` | Atomic search/replace; the search string must occur exactly once. |
 | `delete_memory_note` | Delete a single file (never directories). |
 | `rename_memory_note` | Move a note from `path` to `new_path`, rewriting every visible incoming link (aliases, headings, and embeds preserved) and the note's own self-references to resolve to the new location. The destination must not already exist (`destination_exists`); all preconditions are validated before the first write. |

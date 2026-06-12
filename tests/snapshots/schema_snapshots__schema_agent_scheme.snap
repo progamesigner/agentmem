@@ -1,5 +1,6 @@
 ---
 source: tests/schema_snapshots.rs
+assertion_line: 54
 expression: "schemas_for(\"<agent>\")"
 ---
 {
@@ -292,8 +293,15 @@ expression: "schemas_for(\"<agent>\")"
           "minLength": 1,
           "type": "string"
         },
+        "append": {
+          "description": "When `true`, `content` is appended to the existing note verbatim —\nexact bytes, no implicit separator — and a missing note is created with\n`content` as its full body. Absent or `false` replaces the whole note.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "content": {
-          "description": "The full new contents of the note.",
+          "description": "The full new contents of the note; with `append: true`, the bytes to\nappend instead.",
           "type": "string"
         },
         "path": {

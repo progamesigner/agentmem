@@ -1397,6 +1397,170 @@ fn write_hidden_target_is_path_not_permitted_and_creates_nothing() {
     );
 }
 
+#[test]
+fn write_append_extends_existing_note_verbatim() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/log.md","content":"- old fact\n"}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/log.md",
+               "content":"- new fact\n","append":true}),
+    ));
+    // No separator inserted; the count is the note's total size after the write.
+    assert_eq!(
+        read_clean(&tb, "Agents/topics/log.md"),
+        "- old fact\n- new fact\n"
+    );
+    assert_eq!(body["bytes_written"], "- old fact\n- new fact\n".len());
+}
+
+#[test]
+fn write_append_to_missing_note_creates_it() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let body = structured(call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/log.md",
+               "content":"- first\n","append":true}),
+    ));
+    assert_eq!(read_clean(&tb, "Agents/topics/log.md"), "- first\n");
+    assert_eq!(body["bytes_written"], "- first\n".len());
+}
+
+#[test]
+fn write_append_round_trips_links() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    // The link target must exist for [[rust]] to resolve and expand.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"seed"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/log.md","content":"intro\n"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/log.md",
+               "content":"see [[rust]]\n","append":true}),
+    )
+    .unwrap();
+    // The appended fragment persists in the suffixed form and reads back clean.
+    let raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/notes/log.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert!(raw.contains("[[rust.jarvis.tony]]"), "raw: {raw}");
+    assert_eq!(
+        read_clean(&tb, "Agents/notes/log.md"),
+        "intro\nsee [[rust]]\n"
+    );
+}
+
+#[test]
+fn write_append_root_core_file_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/MEMORY.md",
+                   "content":"x","append":true}),
+        ),
+        "path_not_permitted",
+    );
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/MEMORY.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn write_append_outside_under_namespaced_is_denied_and_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    write_outside(&tmp, "Actions/release.md", "original");
+    assert_code(
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md",
+                   "content":"new","append":true}),
+        ),
+        "write_denied",
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("Actions/release.md")).unwrap(),
+        "original"
+    );
+}
+
+#[test]
+fn write_append_hidden_target_is_path_not_permitted_and_creates_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/.hidden.md",
+                   "content":"x","append":true}),
+        ),
+        "path_not_permitted",
+    );
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/.hidden.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn write_append_concurrent_appends_are_serialised() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    std::thread::scope(|s| {
+        for n in 0..8 {
+            let tb = &tb;
+            s.spawn(move || {
+                call(
+                    tb,
+                    "write_memory_note",
+                    json!({"agent":"jarvis","user":"tony","path":"Agents/topics/log.md",
+                           "content":format!("entry-{n}\n"),"append":true}),
+                )
+                .unwrap();
+            });
+        }
+    });
+    let contents = read_clean(&tb, "Agents/topics/log.md");
+    // Every fragment landed exactly once; the per-target lock prevents lost updates.
+    for n in 0..8 {
+        assert_eq!(
+            contents.matches(&format!("entry-{n}\n")).count(),
+            1,
+            "entry-{n} in: {contents}"
+        );
+    }
+}
+
 // --- edit_memory_note ---
 
 #[test]
