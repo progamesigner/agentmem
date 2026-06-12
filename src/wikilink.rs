@@ -167,6 +167,30 @@ pub(crate) fn post_rename_index(
     post
 }
 
+/// The visible set extended with pending notes that do not exist yet: every
+/// entry of `index` plus one entry per `pending` item whose clean path is not
+/// already indexed. Link-target derivation for a batch write runs against this
+/// index, so a link whose target is created by another entry of the same batch
+/// resolves — and participates in shortest-name disambiguation — exactly as it
+/// would after the batch lands. (Generalizes the [`post_rename_index`] pattern.)
+pub(crate) fn seed_index(index: &LinkIndex, pending: &[LinkEntry]) -> LinkIndex {
+    let mut seeded = LinkIndex::default();
+    for entry in index.all_entries() {
+        seeded.insert(&entry.clean_path, entry.region);
+    }
+    for entry in pending {
+        let already_indexed = index
+            .entries_for_basename(last_segment(&entry.clean_path))
+            .iter()
+            .any(|e| e.clean_path == entry.clean_path);
+        if !already_indexed {
+            seeded.insert(&entry.clean_path, entry.region);
+        }
+    }
+    seeded.sort();
+    seeded
+}
+
 /// Rewrite, in `content` (its stored on-disk form), exactly those link targets
 /// whose forward resolution selects the note at `source_clean_path` (clean,
 /// vault-root-relative, `.md` stripped), re-pointing them at `destination`. The
@@ -903,6 +927,41 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, AgentmemError::CrossScopeLink { .. }));
         assert_eq!(err.code(), crate::error::ErrorCode::WriteDenied);
+    }
+
+    // --- seed_index (batch-write pending entries) ---
+
+    #[test]
+    fn seeded_entries_resolve_and_participate_in_disambiguation() {
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let pending = [
+            entry("Agents/lang/rust", Region::InsideAgentsFolder),
+            entry("Agents/topics/go", Region::InsideAgentsFolder),
+        ];
+        let seeded = seed_index(&idx, &pending);
+        // A pending entry resolves like a visible note.
+        let go = resolve_target(&seeded, LinkKind::Wikilink, "go").unwrap();
+        assert_eq!(go.clean_path, "Agents/topics/go");
+        assert_eq!(shortest_name(&seeded, go), "go");
+        // And it participates in shortest-name disambiguation: the bare `rust`
+        // basename now collides, so both entries render qualified.
+        let existing = resolve_target(&seeded, LinkKind::Wikilink, "topics/rust").unwrap();
+        assert_eq!(shortest_name(&seeded, existing), "topics/rust");
+        let pending_rust = resolve_target(&seeded, LinkKind::Wikilink, "lang/rust").unwrap();
+        assert_eq!(shortest_name(&seeded, pending_rust), "lang/rust");
+    }
+
+    #[test]
+    fn seeding_an_already_visible_path_does_not_duplicate_it() {
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let seeded = seed_index(
+            &idx,
+            &[entry("Agents/topics/rust", Region::InsideAgentsFolder)],
+        );
+        // Still a single entry: the bare basename stays unambiguous.
+        assert_eq!(seeded.entries_for_basename("rust").len(), 1);
+        let e = resolve_target(&seeded, LinkKind::Wikilink, "rust").unwrap();
+        assert_eq!(shortest_name(&seeded, e), "rust");
     }
 
     #[test]

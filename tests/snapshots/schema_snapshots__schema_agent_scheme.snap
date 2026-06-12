@@ -445,5 +445,52 @@ expression: "schemas_for(\"<agent>\")"
       ],
       "type": "object"
     }
+  },
+  "write_memory_notes": {
+    "description": "Write up to 20 memory notes in one call. Each `notes` entry is `{ path, content, append? }` with the same semantics as `write_memory_note`. Every entry is validated before any file is touched — any failure rejects the whole call with no writes — and a `[[wikilink]]` may target a note created by another entry of the same call. Entries are applied in request order; returns one `{ path, bytes_written }` result per entry, in request order.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "notes": {
+          "description": "1 to 20 entries, each `{ path, content, append? }` with the same\nper-entry semantics as `write_memory_note`. Every entry is fully\nvalidated (path, policy, visibility, link expansion) before any file is\ntouched: any failure rejects the whole call with no writes, as do an\nempty or oversized array, a malformed entry, and two entries resolving\nto the same virtual path. A `[[wikilink]]` may target a note created by\nanother entry of the same call — resolution is order-independent. The\nresult carries one `{ path, bytes_written }` entry per note, in request\norder. Each applied entry is atomic and indexed for recall\nsynchronously, but the batch is not transactional across entries: a\ncrash mid-apply may leave a prefix of the batch applied.",
+          "items": {
+            "description": "One `write_memory_notes` entry: a note to write, with the same per-entry\nsemantics as `write_memory_note`.",
+            "properties": {
+              "append": {
+                "description": "When `true`, `content` is appended to the existing note verbatim —\nexact bytes, no implicit separator — and a missing note is created with\n`content` as its full body. Absent or `false` replaces the whole note.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "content": {
+                "description": "The full new contents of the note; with `append: true`, the bytes to\nappend instead.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The virtual path of the note, relative to the vault root.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "agent",
+        "notes"
+      ],
+      "type": "object"
+    }
   }
 }

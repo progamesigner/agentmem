@@ -1,5 +1,5 @@
 //! The agent-facing tool surface: schema generation, scope extraction, and the
-//! tool handlers (the thirteen memory-note tools plus `recall_memory_notes` when
+//! tool handlers (the fourteen memory-note tools plus `recall_memory_notes` when
 //! the recall backend is enabled).
 //!
 //! Each tool's input schema is assembled at startup by merging the
@@ -36,6 +36,8 @@ const DEFAULT_LIMIT: u64 = 200;
 const MAX_LIMIT: u64 = 1000;
 /// The maximum number of paths accepted by `read_memory_notes`.
 const MAX_BATCH_READ: usize = 20;
+/// The maximum number of entries accepted by `write_memory_notes`.
+const MAX_BATCH_WRITE: usize = 20;
 
 /// The set of tool names this server exposes, in advertised order.
 pub const TOOL_NAMES: &[&str] = &[
@@ -43,6 +45,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "read_memory_note",
     "read_memory_notes",
     "write_memory_note",
+    "write_memory_notes",
     "edit_memory_note",
     "delete_memory_note",
     "rename_memory_note",
@@ -181,6 +184,39 @@ struct WriteFields {
     /// exact bytes, no implicit separator — and a missing note is created with
     /// `content` as its full body. Absent or `false` replaces the whole note.
     append: Option<bool>,
+}
+
+/// One `write_memory_notes` entry: a note to write, with the same per-entry
+/// semantics as `write_memory_note`.
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct BatchWriteEntry {
+    /// The virtual path of the note, relative to the vault root.
+    path: String,
+    /// The full new contents of the note; with `append: true`, the bytes to
+    /// append instead.
+    content: String,
+    /// When `true`, `content` is appended to the existing note verbatim —
+    /// exact bytes, no implicit separator — and a missing note is created with
+    /// `content` as its full body. Absent or `false` replaces the whole note.
+    append: Option<bool>,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct BatchWriteFields {
+    /// 1 to 20 entries, each `{ path, content, append? }` with the same
+    /// per-entry semantics as `write_memory_note`. Every entry is fully
+    /// validated (path, policy, visibility, link expansion) before any file is
+    /// touched: any failure rejects the whole call with no writes, as do an
+    /// empty or oversized array, a malformed entry, and two entries resolving
+    /// to the same virtual path. A `[[wikilink]]` may target a note created by
+    /// another entry of the same call — resolution is order-independent. The
+    /// result carries one `{ path, bytes_written }` entry per note, in request
+    /// order. Each applied entry is atomic and indexed for recall
+    /// synchronously, but the batch is not transactional across entries: a
+    /// crash mid-apply may leave a prefix of the batch applied.
+    notes: Vec<BatchWriteEntry>,
 }
 
 #[derive(JsonSchema)]
@@ -390,6 +426,7 @@ impl Toolbox {
             "read_memory_note" => Toolbox::read_memory_note,
             "read_memory_notes" => Toolbox::read_memory_notes,
             "write_memory_note" => Toolbox::write_memory_note,
+            "write_memory_notes" => Toolbox::write_memory_notes,
             "edit_memory_note" => Toolbox::edit_memory_note,
             "delete_memory_note" => Toolbox::delete_memory_note,
             "rename_memory_note" => Toolbox::rename_memory_note,
@@ -913,6 +950,122 @@ impl Toolbox {
                 storage.write_atomic(physical, &content)
             }
         })
+    }
+
+    /// Write up to [`MAX_BATCH_WRITE`] notes in one call, all-or-nothing on
+    /// validation. Phase 1 validates every entry with the exact per-entry
+    /// semantics of `write_memory_note` — reserved roots, policy gating, link
+    /// expansion (against the visible set seeded with the batch's own paths, so
+    /// intra-batch links resolve order-independently), and visibility — and
+    /// computes the final contents with no writes; phase 2 then applies in
+    /// request order. Each applied entry is atomic and indexed synchronously,
+    /// but the batch is not transactional across entries: a failure or crash
+    /// mid-apply leaves a clean prefix of the batch applied.
+    fn write_memory_notes(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let scope = self.resolve_scope(args, &["notes"])?;
+        let raw_entries = match args.get("notes") {
+            Some(Value::Array(items)) => items,
+            Some(_) => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "argument 'notes' must be an array".to_string(),
+                });
+            }
+            None => {
+                return Err(AgentmemError::InvalidArgument {
+                    message: "missing required argument 'notes'".to_string(),
+                });
+            }
+        };
+        if raw_entries.is_empty() {
+            return Err(AgentmemError::InvalidArgument {
+                message: "argument 'notes' must contain at least one entry".to_string(),
+            });
+        }
+        if raw_entries.len() > MAX_BATCH_WRITE {
+            return Err(AgentmemError::InvalidArgument {
+                message: format!("argument 'notes' must not exceed {MAX_BATCH_WRITE} entries"),
+            });
+        }
+
+        let resolver = self.storage.resolver();
+
+        // --- Phase 1: validate and compute; no writes. ---
+        let mut entries = Vec::with_capacity(raw_entries.len());
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for raw in raw_entries {
+            let (path, content, append) = parse_batch_write_entry(raw)?;
+            let vpath = VirtualPath::new(&path)?;
+            if !seen.insert(vpath.as_str().to_string()) {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!("duplicate path '{}' in 'notes'", vpath.as_str()),
+                });
+            }
+            let region = resolver.detect_region(&vpath);
+            entries.push((path, vpath, region, content, append));
+        }
+
+        // The link index is seeded with the batch's own paths before any entry
+        // expands, so an entry can link to a note created by another entry of
+        // the same call and resolution is independent of entry order.
+        let index = if self.scheme().is_empty() {
+            None
+        } else {
+            let regions = self.policy.list_visible_regions(false);
+            let base = self.storage.build_link_index(&scope, &regions)?;
+            let pending: Vec<LinkEntry> = entries
+                .iter()
+                .map(|(_, vpath, region, _, _)| LinkEntry {
+                    clean_path: vpath
+                        .as_str()
+                        .strip_suffix(".md")
+                        .unwrap_or(vpath.as_str())
+                        .to_string(),
+                    region: *region,
+                })
+                .collect();
+            Some(crate::wikilink::seed_index(&base, &pending))
+        };
+
+        let mut prepared = Vec::with_capacity(entries.len());
+        for (path, vpath, region, content, append) in entries {
+            self.reject_if_root_reserved(&vpath)?;
+            self.policy
+                .gate_write(region)
+                .map_err(|e| Self::policy_err(e, &vpath))?;
+            let content = match &index {
+                Some(index) => {
+                    crate::wikilink::expand_links(&content, &scope, region, resolver, index)?
+                }
+                None => content,
+            };
+            let physical = resolver.resolve(&scope, &vpath)?;
+            if !self.storage.is_visible(&physical) {
+                return Err(AgentmemError::PathNotPermitted {
+                    virtual_path: vpath.as_str().to_string(),
+                });
+            }
+            prepared.push((path, region, physical, content, append));
+        }
+
+        // --- Phase 2: apply in request order. ---
+        let mut results = Vec::with_capacity(prepared.len());
+        for (path, region, physical, content, append) in prepared {
+            let written = if append {
+                // The locked read-modify-write, not precomputed bytes: an
+                // external edit between the phases must not be lost.
+                self.storage.read_modify_write(&physical, |current| {
+                    Ok(match current {
+                        Some(existing) => format!("{existing}{content}"),
+                        None => content.clone(),
+                    })
+                })?
+            } else {
+                self.storage.write_atomic(&physical, &content)?
+            };
+            self.recall_on_write(&scope, region, &physical);
+            results.push(json!({ "path": path, "bytes_written": written }));
+        }
+        Ok(ok_json(json!({ "results": results })))
     }
 
     fn edit_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
@@ -1581,6 +1734,45 @@ fn parse_batch_entry(entry: &Value) -> Result<(String, Option<LineRange>), Agent
     }
 }
 
+/// Parse one `write_memory_notes` entry: a `{ path, content, append? }` object.
+/// A malformed entry is a call-level `invalid_argument` — the batch is
+/// all-or-nothing, so nothing is validated further once any entry is malformed.
+fn parse_batch_write_entry(entry: &Value) -> Result<(String, String, bool), AgentmemError> {
+    let Value::Object(fields) = entry else {
+        return Err(AgentmemError::InvalidArgument {
+            message: "argument 'notes' entries must be { path, content, append? } objects"
+                .to_string(),
+        });
+    };
+    for key in fields.keys() {
+        if !matches!(key.as_str(), "path" | "content" | "append") {
+            return Err(AgentmemError::InvalidArgument {
+                message: format!("unexpected key '{key}' in 'notes' entry"),
+            });
+        }
+    }
+    let Some(Value::String(path)) = fields.get("path") else {
+        return Err(AgentmemError::InvalidArgument {
+            message: "entries in 'notes' must carry a string 'path'".to_string(),
+        });
+    };
+    let Some(Value::String(content)) = fields.get("content") else {
+        return Err(AgentmemError::InvalidArgument {
+            message: "entries in 'notes' must carry a string 'content'".to_string(),
+        });
+    };
+    let append = match fields.get("append") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return Err(AgentmemError::InvalidArgument {
+                message: "'append' in a 'notes' entry must be a boolean".to_string(),
+            });
+        }
+    };
+    Ok((path.clone(), content.clone(), append))
+}
+
 /// Slice `content` to a 1-based line range. Lines are delimited by `\n` with
 /// delimiters preserved — `\r\n` content keeps the `\r` inside its line, and a
 /// missing final newline still counts as a final line — so concatenating
@@ -1673,6 +1865,11 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
             "write_memory_note",
             "Atomically write the full contents of a memory note at the given virtual path.",
             merge_schema(scheme, fields_schema::<WriteFields>()),
+        ),
+        tool(
+            "write_memory_notes",
+            "Write up to 20 memory notes in one call. Each `notes` entry is `{ path, content, append? }` with the same semantics as `write_memory_note`. Every entry is validated before any file is touched — any failure rejects the whole call with no writes — and a `[[wikilink]]` may target a note created by another entry of the same call. Entries are applied in request order; returns one `{ path, bytes_written }` result per entry, in request order.",
+            merge_schema(scheme, fields_schema::<BatchWriteFields>()),
         ),
         tool(
             "edit_memory_note",

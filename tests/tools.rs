@@ -2103,6 +2103,369 @@ fn write_append_concurrent_appends_are_serialised() {
     }
 }
 
+// --- write_memory_notes ---
+
+#[test]
+fn batch_write_lands_entries_in_order_with_byte_counts() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let body = structured(call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/rust/fact.md","content":"a fact"},
+            {"path":"Agents/topics/rust/INDEX.md","content":"the index\n"},
+            {"path":"Agents/topics/LOG.md","content":"- added rust\n"},
+        ]}),
+    ));
+    assert_eq!(
+        body["results"],
+        json!([
+            {"path":"Agents/topics/rust/fact.md","bytes_written":"a fact".len()},
+            {"path":"Agents/topics/rust/INDEX.md","bytes_written":"the index\n".len()},
+            {"path":"Agents/topics/LOG.md","bytes_written":"- added rust\n".len()},
+        ])
+    );
+    assert_eq!(read_clean(&tb, "Agents/topics/rust/fact.md"), "a fact");
+    assert_eq!(
+        read_clean(&tb, "Agents/topics/rust/INDEX.md"),
+        "the index\n"
+    );
+    assert_eq!(read_clean(&tb, "Agents/topics/LOG.md"), "- added rust\n");
+}
+
+#[test]
+fn batch_write_is_immediately_recallable_without_watcher() {
+    let tmp = TempDir::new().unwrap();
+    let tb = frozen_recall_toolbox(&tmp);
+    // The first query builds the (empty) index; with the watcher off and the
+    // index frozen-fresh, only the server's own synchronous notifications can
+    // make the batch visible.
+    let body = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","query":"zyzzyva"}),
+    ));
+    assert_eq!(body["hits"], json!([]));
+    call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/a.md","content":"the zyzzyva fact"},
+            {"path":"Agents/topics/b.md","content":"the xylyl fact"},
+        ]}),
+    )
+    .unwrap();
+    for (query, path) in [
+        ("zyzzyva", "Agents/topics/a.md"),
+        ("xylyl", "Agents/topics/b.md"),
+    ] {
+        let body = structured(call(
+            &tb,
+            "recall_memory_notes",
+            json!({"agent":"jarvis","user":"tony","query":query}),
+        ));
+        let paths: Vec<&str> = body["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec![path], "query {query:?}");
+    }
+}
+
+#[test]
+fn batch_write_intra_batch_link_persists_suffixed_form() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/rust/facts.md","content":"the facts"},
+            {"path":"Agents/topics/rust/INDEX.md","content":"see [[facts]]"},
+        ]}),
+    )
+    .unwrap();
+    // On disk the link carries the caller's suffix, exactly as if the notes
+    // had been written sequentially.
+    let raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/topics/rust/INDEX.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert_eq!(raw, "see [[facts.jarvis.tony]]");
+    assert_eq!(
+        read_clean(&tb, "Agents/topics/rust/INDEX.md"),
+        "see [[facts]]"
+    );
+}
+
+#[test]
+fn batch_write_intra_batch_link_resolution_is_order_independent() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    // The linking entry comes first, its target second: the index is seeded
+    // with the whole batch before any entry expands.
+    call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/rust/INDEX.md","content":"see [[facts]]"},
+            {"path":"Agents/topics/rust/facts.md","content":"the facts"},
+        ]}),
+    )
+    .unwrap();
+    let raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/topics/rust/INDEX.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert_eq!(raw, "see [[facts.jarvis.tony]]");
+}
+
+#[test]
+fn batch_write_reserved_root_entry_rejects_whole_batch() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let res = call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/a.md","content":"alpha"},
+            {"path":"Agents/topics/b.md","content":"beta"},
+            {"path":"Agents/MEMORY.md","content":"index"},
+        ]}),
+    );
+    // The error names the reserved path and the wrapper tool.
+    match res {
+        Err(e) => {
+            assert_eq!(e.code().as_str(), "path_not_permitted");
+            let msg = e.to_string();
+            assert!(msg.contains("Agents/MEMORY.md"), "message: {msg}");
+            assert!(msg.contains("evolve_core_persona"), "message: {msg}");
+        }
+        Ok(r) => panic!("expected error, got: {:?}", r.structured_content),
+    }
+    // None of the entries — including the two valid ones — was created.
+    for rel in [
+        "Agents/jarvis.tony/topics/a.jarvis.tony.md",
+        "Agents/jarvis.tony/topics/b.jarvis.tony.md",
+        "Agents/jarvis.tony/MEMORY.jarvis.tony.md",
+    ] {
+        assert!(!tmp.path().join(rel).exists(), "{rel} must not exist");
+    }
+}
+
+#[test]
+fn batch_write_policy_denied_entry_rejects_whole_batch() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    write_outside(&tmp, "Actions/release.md", "original");
+    assert_code(
+        call(
+            &tb,
+            "write_memory_notes",
+            json!({"agent":"jarvis","user":"tony","notes":[
+                {"path":"Agents/topics/a.md","content":"alpha"},
+                {"path":"Actions/release.md","content":"hijack"},
+            ]}),
+        ),
+        "write_denied",
+    );
+    // The vault is byte-identical: the valid entry was not created and the
+    // denied target is unchanged.
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/a.jarvis.tony.md")
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("Actions/release.md")).unwrap(),
+        "original"
+    );
+}
+
+#[test]
+fn batch_write_leak_guard_entry_rejects_whole_batch() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Readwrite);
+    write_outside(&tmp, "Actions/release.md", "original");
+    // The shared entry links to a scoped note created by the same batch:
+    // persisting the suffixed form would leak the scope's existence, so the
+    // whole call is refused — including the scoped entry itself.
+    assert_code(
+        call(
+            &tb,
+            "write_memory_notes",
+            json!({"agent":"jarvis","user":"tony","notes":[
+                {"path":"Agents/topics/rust.md","content":"the rust note"},
+                {"path":"Actions/release.md","content":"ship [[rust]]"},
+            ]}),
+        ),
+        "write_denied",
+    );
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/rust.jarvis.tony.md")
+            .exists()
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("Actions/release.md")).unwrap(),
+        "original"
+    );
+}
+
+#[test]
+fn batch_write_duplicate_paths_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "write_memory_notes",
+            json!({"agent":"jarvis","user":"tony","notes":[
+                {"path":"Agents/topics/a.md","content":"first"},
+                {"path":"Agents/topics/a.md","content":"second","append":true},
+            ]}),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/a.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn batch_write_size_limits() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "write_memory_notes",
+            json!({"agent":"jarvis","user":"tony","notes":[]}),
+        ),
+        "invalid_argument",
+    );
+    let notes: Vec<Value> = (0..21)
+        .map(|i| json!({"path": format!("Agents/topics/n{i}.md"), "content": "x"}))
+        .collect();
+    assert_code(
+        call(
+            &tb,
+            "write_memory_notes",
+            json!({"agent":"jarvis","user":"tony","notes":notes}),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/n0.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn batch_write_malformed_entry_rejects_the_whole_call() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for notes in [
+        json!([{"path":"Agents/topics/a.md","content":"x"}, "Agents/topics/b.md"]),
+        json!([{"path":"Agents/topics/a.md","content":"x"}, {"path":"Agents/topics/b.md"}]),
+        json!([{"path":"Agents/topics/a.md","content":"x"}, {"path":"Agents/topics/b.md","content":"x","extra":1}]),
+        json!([{"path":"Agents/topics/a.md","content":"x"}, {"path":"Agents/topics/b.md","content":"x","append":"yes"}]),
+    ] {
+        assert_code(
+            call(
+                &tb,
+                "write_memory_notes",
+                json!({"agent":"jarvis","user":"tony","notes":notes}),
+            ),
+            "invalid_argument",
+        );
+    }
+    // The well-formed first entry never landed.
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/a.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn batch_write_mixes_append_and_replace() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/LOG.md","content":"- old\n"},
+            {"path":"Agents/topics/draft.md","content":"draft"},
+        ]}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "write_memory_notes",
+        json!({"agent":"jarvis","user":"tony","notes":[
+            {"path":"Agents/topics/LOG.md","content":"- new\n","append":true},
+            {"path":"Agents/topics/draft.md","content":"final"},
+            {"path":"Agents/topics/fresh.md","content":"- first\n","append":true},
+        ]}),
+    ));
+    // Appends report the note's total size after the write; replaces the
+    // content length. An append to a missing note creates it.
+    assert_eq!(
+        body["results"],
+        json!([
+            {"path":"Agents/topics/LOG.md","bytes_written":"- old\n- new\n".len()},
+            {"path":"Agents/topics/draft.md","bytes_written":"final".len()},
+            {"path":"Agents/topics/fresh.md","bytes_written":"- first\n".len()},
+        ])
+    );
+    assert_eq!(read_clean(&tb, "Agents/topics/LOG.md"), "- old\n- new\n");
+    assert_eq!(read_clean(&tb, "Agents/topics/draft.md"), "final");
+    assert_eq!(read_clean(&tb, "Agents/topics/fresh.md"), "- first\n");
+}
+
+#[test]
+fn batch_write_error_codes_match_single_write() {
+    // Each failing target must yield the same code from the batch tool as from
+    // `write_memory_note`.
+    let cases: &[(Policy, &str, &str)] = &[
+        (Policy::Namespaced, "Agents/topics/.hidden.md", "x"),
+        (Policy::Namespaced, "Actions/release.md", "x"),
+        (Policy::Readonly, "Agents/topics/n.md", "x"),
+        (Policy::Namespaced, "Agents/HEARTBEAT.md", "x"),
+    ];
+    for (policy, path, content) in cases {
+        let tmp = TempDir::new().unwrap();
+        let tb = toolbox(&tmp, "Agents", "<agent>.<user>", *policy);
+        let single = call(
+            &tb,
+            "write_memory_note",
+            json!({"agent":"jarvis","user":"tony","path":path,"content":content}),
+        )
+        .expect_err("single write must fail");
+        let batch = call(
+            &tb,
+            "write_memory_notes",
+            json!({"agent":"jarvis","user":"tony","notes":[{"path":path,"content":content}]}),
+        )
+        .expect_err("batch write must fail");
+        assert_eq!(
+            batch.code().as_str(),
+            single.code().as_str(),
+            "code parity for {path}"
+        );
+    }
+}
+
 // --- edit_memory_note ---
 
 #[test]
