@@ -207,6 +207,94 @@ fn heartbeat_links_expand_on_disk() {
 }
 
 #[test]
+fn property_round_trip_matches_body_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, Policy::Namespaced);
+    seed_rust(&tb);
+    // The same frontmatter link, once via a whole-file write...
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/a.md",
+               "content":"---\nrelated: \"[[rust]]\"\n---\nbody\n"}),
+    )
+    .unwrap();
+    // ...and once via the property tool.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/b.md","content":"body\n"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "update_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/b.md",
+               "properties": { "related": "[[rust]]" }}),
+    )
+    .unwrap();
+
+    // Both persist the suffixed Obsidian-resolvable form.
+    for f in ["a", "b"] {
+        let raw = std::fs::read_to_string(
+            tmp.path()
+                .join(format!("Agents/jarvis.tony/notes/{f}.jarvis.tony.md")),
+        )
+        .unwrap();
+        assert!(raw.contains("[[rust.jarvis.tony]]"), "{f}: {raw}");
+    }
+    // Both the content view and the property view present the clean form.
+    for path in ["Agents/notes/a.md", "Agents/notes/b.md"] {
+        let content = read_content(&tb, path);
+        assert!(content.contains("[[rust]]"), "{path}: {content}");
+        assert!(!content.contains("jarvis.tony"), "{path}: {content}");
+        let props = call(
+            &tb,
+            "read_note_properties",
+            json!({"agent":"jarvis","user":"tony","path":path}),
+        )
+        .unwrap()
+        .structured_content
+        .unwrap();
+        assert_eq!(
+            props["properties"],
+            json!({ "related": "[[rust]]" }),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn property_only_link_counts_toward_backlinks() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, Policy::Namespaced);
+    seed_rust(&tb);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","content":"no body links"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "update_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md",
+               "properties": { "related": "[[rust]]" }}),
+    )
+    .unwrap();
+
+    let body = call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","backlinks":true}),
+    )
+    .unwrap()
+    .structured_content
+    .unwrap();
+    assert_eq!(body["backlinks"], json!(["Agents/notes/memo.md"]));
+}
+
+#[test]
 fn shared_link_from_own_scope_note_stays_clean() {
     let tmp = TempDir::new().unwrap();
     let tb = toolbox(&tmp, Policy::Namespaced);

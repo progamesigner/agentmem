@@ -495,7 +495,7 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
     }
   },
   "read_note_properties": {
-    "description": "Read a note's frontmatter properties as a JSON object in `{ properties }`. Absent or malformed frontmatter yields an empty object.",
+    "description": "Read a note's frontmatter properties as a JSON object in `{ properties }`. Absent or malformed frontmatter yields an empty object. `[[wikilink]]` targets in string values (including inside arrays and nested objects) are returned in their clean agent-facing form, matching the body view of `read_memory_note`.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -580,7 +580,7 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
     }
   },
   "update_note_properties": {
-    "description": "Merge a JSON object into a note's frontmatter atomically: each key is upserted, an explicit `null` deletes a key, and the note body is untouched. The block is created when absent, removed when the merge empties it, and re-serialized in normalized form (stable key order; comments and formatting are not preserved). Returns the full post-update `{ properties }`.",
+    "description": "Merge a JSON object into a note's frontmatter atomically: each key is upserted, an explicit `null` deletes a key, and the note body is untouched. The block is created when absent, removed when the merge empties it, and re-serialized in normalized form (stable key order; comments and formatting are not preserved). `[[wikilink]]` targets in string values (including inside arrays and nested objects) are persisted in their resolvable on-disk form, exactly as a whole-file write would store them. Returns the full post-update `{ properties }` in the clean agent-facing form — what you write is what you read back.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

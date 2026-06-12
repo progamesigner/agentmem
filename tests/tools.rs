@@ -2926,6 +2926,155 @@ fn properties_update_missing_is_not_found() {
     );
 }
 
+/// Create the caller's own-scope note `Agents/topics/rust.md` so `[[rust]]`
+/// resolves in the property-link tests.
+fn seed_rust_target(tb: &Toolbox) {
+    call(
+        tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"the rust note"}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn properties_update_expands_own_scope_link_on_disk_and_round_trips_clean() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    seed_rust_target(&tb);
+    let physical = seed_note(&tmp, &tb, "The body.\n");
+    let body = structured(call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "properties": { "related": "[[rust]]" },
+        }),
+    ));
+    // The result echoes the clean form the agent supplied...
+    assert_eq!(body["properties"], json!({ "related": "[[rust]]" }));
+    // ...while the persisted value carries the suffix (Obsidian-resolvable).
+    let raw = std::fs::read_to_string(physical).unwrap();
+    assert!(raw.contains("[[rust.jarvis.tony]]"), "persisted: {raw}");
+    // Both the property view and the content view read back clean.
+    let body = structured(call(
+        &tb,
+        "read_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
+    ));
+    assert_eq!(body["properties"], json!({ "related": "[[rust]]" }));
+    let body = structured(call(
+        &tb,
+        "read_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
+    ));
+    let content = body["content"].as_str().unwrap();
+    assert!(content.contains("[[rust]]"), "content: {content}");
+    assert!(!content.contains("jarvis.tony"), "content: {content}");
+}
+
+#[test]
+fn properties_read_strips_suffix_left_by_whole_file_write() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    seed_rust_target(&tb);
+    // write_memory_note scans the whole file, so the frontmatter link is
+    // persisted suffixed; the property read must still present it clean.
+    let physical = seed_note(&tmp, &tb, "---\nrelated: \"[[rust]]\"\n---\nbody\n");
+    let raw = std::fs::read_to_string(physical).unwrap();
+    assert!(raw.contains("[[rust.jarvis.tony]]"), "persisted: {raw}");
+    let body = structured(call(
+        &tb,
+        "read_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
+    ));
+    assert_eq!(body["properties"], json!({ "related": "[[rust]]" }));
+}
+
+#[test]
+fn properties_update_shared_note_linking_own_scope_is_refused_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Readwrite);
+    seed_rust_target(&tb);
+    let content = "---\nstatus: draft\n---\nx\n";
+    write_outside(&tmp, "Actions/release.md", content);
+    assert_code(
+        call(
+            &tb,
+            "update_note_properties",
+            json!({
+                "agent":"jarvis","user":"tony","path":"Actions/release.md",
+                "properties": { "related": "[[rust]]" },
+            }),
+        ),
+        "write_denied",
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("Actions/release.md")).unwrap(),
+        content
+    );
+}
+
+#[test]
+fn properties_update_shared_target_stays_clean_on_disk() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    write_outside(&tmp, "Actions/release.md", "shared");
+    let physical = seed_note(&tmp, &tb, "body\n");
+    call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "properties": { "related": "[[release]]" },
+        }),
+    )
+    .unwrap();
+    let raw = std::fs::read_to_string(physical).unwrap();
+    assert!(raw.contains("[[release]]"), "persisted: {raw}");
+    assert!(!raw.contains("jarvis.tony"), "persisted: {raw}");
+}
+
+#[test]
+fn properties_update_dangling_and_non_string_verbatim_nested_transformed() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    seed_rust_target(&tb);
+    let physical = seed_note(&tmp, &tb, "body\n");
+    let clean = json!({
+        "links": ["[[rust]]", { "see": "[[rust]]" }],
+        "ghost": "[[not-yet-created]]",
+        "priority": 2,
+    });
+    let body = structured(call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "properties": clean,
+        }),
+    ));
+    // The response echoes the clean forms verbatim.
+    assert_eq!(body["properties"], clean);
+    // Nested string values are transformed on disk; dangling and non-string
+    // values are persisted verbatim.
+    let raw = std::fs::read_to_string(physical).unwrap();
+    assert_eq!(
+        raw.matches("[[rust.jarvis.tony]]").count(),
+        2,
+        "persisted: {raw}"
+    );
+    assert!(raw.contains("[[not-yet-created]]"), "persisted: {raw}");
+    assert!(raw.contains("priority: 2"), "persisted: {raw}");
+    // Reading back presents the same clean nested tree.
+    let body = structured(call(
+        &tb,
+        "read_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
+    ));
+    assert_eq!(body["properties"], clean);
+}
+
 #[cfg(feature = "recall-tantivy")]
 #[test]
 fn properties_update_is_immediately_recallable_via_filters() {

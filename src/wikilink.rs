@@ -99,6 +99,68 @@ pub fn strip_links(content: &str, rendered_scope: &str, resolver: &PathResolver)
     .unwrap_or_else(|_| content.to_string())
 }
 
+/// Expand every link occurrence in every string leaf of `value` to its on-disk
+/// form, recursing into arrays and object values — the [`expand_links`]
+/// transform applied to a parsed frontmatter property tree. Object keys and
+/// non-string leaves are untouched data. Carries the same cross-scope leak
+/// guard: the first offending leaf aborts and propagates the error.
+pub fn expand_value_links(
+    value: &serde_json::Value,
+    rendered_scope: &str,
+    file_region: Region,
+    resolver: &PathResolver,
+    index: &LinkIndex,
+) -> Result<serde_json::Value, AgentmemError> {
+    map_string_leaves(value, &mut |s| {
+        expand_links(s, rendered_scope, file_region, resolver, index)
+    })
+}
+
+/// Strip the caller's own scope suffix from every link target in every string
+/// leaf of `value`, recursing into arrays and object values — the
+/// [`strip_links`] transform applied to a parsed frontmatter property tree.
+pub fn strip_value_links(
+    value: &serde_json::Value,
+    rendered_scope: &str,
+    resolver: &PathResolver,
+) -> serde_json::Value {
+    map_string_leaves(value, &mut |s| {
+        Ok::<_, AgentmemError>(strip_links(s, rendered_scope, resolver))
+    })
+    // The closure is infallible, so unwrap is safe.
+    .unwrap_or_else(|_| value.clone())
+}
+
+/// Rebuild `value` with `f` applied to every string leaf, recursing into arrays
+/// and object values. Object keys and non-string leaves are copied verbatim.
+/// The first `Err` aborts and propagates.
+fn map_string_leaves<F>(
+    value: &serde_json::Value,
+    f: &mut F,
+) -> Result<serde_json::Value, AgentmemError>
+where
+    F: FnMut(&str) -> Result<String, AgentmemError>,
+{
+    use serde_json::Value;
+    Ok(match value {
+        Value::String(s) => Value::String(f(s)?),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|v| map_string_leaves(v, f))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k.clone(), map_string_leaves(v, f)?);
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    })
+}
+
 /// Strip the caller's suffix from one stored link target, per kind. `None` when
 /// the target does not carry the caller's suffix (shared and dangling targets
 /// are stored clean).
@@ -962,6 +1024,65 @@ mod tests {
         assert_eq!(seeded.entries_for_basename("rust").len(), 1);
         let e = resolve_target(&seeded, LinkKind::Wikilink, "rust").unwrap();
         assert_eq!(shortest_name(&seeded, e), "rust");
+    }
+
+    // --- value walkers (frontmatter property trees) ---
+
+    #[test]
+    fn value_expand_and_strip_recurse_into_arrays_and_objects() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let clean = serde_json::json!({
+            "related": "[[rust]]",
+            "links": ["[[rust]]", { "see": "see [[rust]] too" }],
+            "dangling": "[[ghost]]",
+            "priority": 2,
+            "done": false,
+        });
+        let expanded =
+            expand_value_links(&clean, "jarvis.tony", Region::InsideAgentsFolder, &r, &idx)
+                .unwrap();
+        assert_eq!(
+            expanded,
+            serde_json::json!({
+                "related": "[[rust.jarvis.tony]]",
+                "links": ["[[rust.jarvis.tony]]", { "see": "see [[rust.jarvis.tony]] too" }],
+                "dangling": "[[ghost]]",
+                "priority": 2,
+                "done": false,
+            })
+        );
+        // Round-trip: stripping the expansion recovers the clean tree.
+        assert_eq!(strip_value_links(&expanded, "jarvis.tony", &r), clean);
+    }
+
+    #[test]
+    fn value_expand_does_not_touch_object_keys() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        // A key that looks like a link is data layout, not a link.
+        let value = serde_json::json!({ "[[rust]]": "[[rust]]" });
+        let expanded =
+            expand_value_links(&value, "jarvis.tony", Region::InsideAgentsFolder, &r, &idx)
+                .unwrap();
+        assert_eq!(
+            expanded,
+            serde_json::json!({ "[[rust]]": "[[rust.jarvis.tony]]" })
+        );
+    }
+
+    #[test]
+    fn value_expand_leak_guard_propagates_from_nested_leaf() {
+        let tmp = assert_fs::TempDir::new().unwrap();
+        let r = resolver(tmp.path());
+        let idx = index(&[("Agents/topics/rust.md", Region::InsideAgentsFolder)]);
+        let value = serde_json::json!({ "links": [{ "see": "[[rust]]" }] });
+        let err = expand_value_links(&value, "jarvis.tony", Region::OutsideAgentsFolder, &r, &idx)
+            .unwrap_err();
+        assert!(matches!(err, AgentmemError::CrossScopeLink { .. }));
+        assert_eq!(err.code(), crate::error::ErrorCode::WriteDenied);
     }
 
     #[test]

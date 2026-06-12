@@ -687,6 +687,34 @@ impl Toolbox {
         crate::wikilink::strip_links(content, scope, self.storage.resolver())
     }
 
+    /// [`Self::expand_links_for`] over every string leaf of a property value
+    /// tree destined for the note at `vpath`, recursing into arrays and nested
+    /// objects. A no-op when the scheme is empty.
+    fn expand_value_links_for(
+        &self,
+        scope: &str,
+        vpath: &VirtualPath,
+        value: &Value,
+    ) -> Result<Value, AgentmemError> {
+        if self.scheme().is_empty() {
+            return Ok(value.clone());
+        }
+        let resolver = self.storage.resolver();
+        let region = resolver.detect_region(vpath);
+        let regions = self.policy.list_visible_regions(false);
+        let index = self.storage.build_link_index(scope, &regions)?;
+        crate::wikilink::expand_value_links(value, scope, region, resolver, &index)
+    }
+
+    /// [`Self::strip_links_for`] over every string leaf of a property value
+    /// tree. A no-op when the scheme is empty.
+    fn strip_value_links_for(&self, scope: &str, value: &Value) -> Value {
+        if self.scheme().is_empty() {
+            return value.clone();
+        }
+        crate::wikilink::strip_value_links(value, scope, self.storage.resolver())
+    }
+
     /// Map a [`PolicyError`] to the appropriate boundary error for `vpath`.
     fn policy_err(err: PolicyError, vpath: &VirtualPath) -> AgentmemError {
         match err {
@@ -1275,11 +1303,13 @@ impl Toolbox {
     fn read_note_properties(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         let scope = self.resolve_scope(args, &["path"])?;
         let vpath = VirtualPath::new(&require_str(args, "path")?)?;
-        // The stored bytes, not the link-stripped view: properties are data, and
-        // the result must match what the recall indexer parses.
+        // Parse the stored bytes, then strip the caller's own suffix from the
+        // parsed value tree, so the property surface matches the read-path view
+        // of the body: the agent never observes its own scope suffix.
         let content = self.read_raw(&scope, &vpath)?;
+        let props = crate::frontmatter::parse(&content).props;
         Ok(ok_json(
-            json!({ "properties": crate::frontmatter::parse(&content).props }),
+            json!({ "properties": self.strip_value_links_for(&scope, &props) }),
         ))
     }
 
@@ -1299,14 +1329,21 @@ impl Toolbox {
             });
         }
         // The whole merge runs under the per-target lock so concurrent updates
-        // to different keys both land. Property values are data — no link
-        // transform on either the frontmatter or the (untouched) body.
+        // to different keys both land. Supplied string values get the
+        // write-side link transform (the cross-scope leak guard fires before
+        // any mutation); the merge itself stays a pure data operation and the
+        // body is untouched.
+        let updates = Value::Object(updates);
         let mut merged = Value::Object(Map::new());
         self.storage.read_modify_write(&physical, |current| {
             let existing = current.ok_or_else(|| AgentmemError::NotFound {
                 virtual_path: vpath.as_str().to_string(),
             })?;
-            let next = crate::frontmatter::merge(&existing, &updates).map_err(|e| {
+            let Value::Object(expanded) = self.expand_value_links_for(&scope, &vpath, &updates)?
+            else {
+                unreachable!("expanding an object yields an object");
+            };
+            let next = crate::frontmatter::merge(&existing, &expanded).map_err(|e| {
                 AgentmemError::InvalidArgument {
                     message: e.to_string(),
                 }
@@ -1315,7 +1352,11 @@ impl Toolbox {
             Ok(next)
         })?;
         self.recall_on_write(&scope, region, &physical);
-        Ok(ok_json(json!({ "properties": merged })))
+        // The response is the merged set in the agent-facing clean form, even
+        // when untouched existing keys carry suffixed values.
+        Ok(ok_json(
+            json!({ "properties": self.strip_value_links_for(&scope, &merged) }),
+        ))
     }
 
     fn load_session_context(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
@@ -2040,12 +2081,12 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
         ),
         tool(
             "read_note_properties",
-            "Read a note's frontmatter properties as a JSON object in `{ properties }`. Absent or malformed frontmatter yields an empty object.",
+            "Read a note's frontmatter properties as a JSON object in `{ properties }`. Absent or malformed frontmatter yields an empty object. `[[wikilink]]` targets in string values (including inside arrays and nested objects) are returned in their clean agent-facing form, matching the body view of `read_memory_note`.",
             merge_schema(scheme, fields_schema::<PropertiesReadFields>()),
         ),
         tool(
             "update_note_properties",
-            "Merge a JSON object into a note's frontmatter atomically: each key is upserted, an explicit `null` deletes a key, and the note body is untouched. The block is created when absent, removed when the merge empties it, and re-serialized in normalized form (stable key order; comments and formatting are not preserved). Returns the full post-update `{ properties }`.",
+            "Merge a JSON object into a note's frontmatter atomically: each key is upserted, an explicit `null` deletes a key, and the note body is untouched. The block is created when absent, removed when the merge empties it, and re-serialized in normalized form (stable key order; comments and formatting are not preserved). `[[wikilink]]` targets in string values (including inside arrays and nested objects) are persisted in their resolvable on-disk form, exactly as a whole-file write would store them. Returns the full post-update `{ properties }` in the clean agent-facing form — what you write is what you read back.",
             merge_schema(scheme, fields_schema::<PropertiesUpdateFields>()),
         ),
         tool(
