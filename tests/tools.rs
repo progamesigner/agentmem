@@ -4129,6 +4129,125 @@ fn recall_property_filters_are_unsupported_on_simple_backend() {
 }
 
 #[test]
+fn recall_matches_clean_link_form_not_scope_idents() {
+    let tmp = TempDir::new().unwrap();
+    let tb = recall_toolbox(&tmp);
+    seed_rust_target(&tb);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/notes/memo.md","content":"see [[rust]] for ownership"}),
+    )
+    .unwrap();
+    // The persisted form carries the suffix...
+    let raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/notes/memo.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert!(raw.contains("[[rust.jarvis.tony]]"), "persisted: {raw}");
+    // ...but recall indexes the clean read view: a regex for the clean form
+    // hits, and the snippet carries no scope suffix.
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","regex":r"\[\[rust\]\]"}),
+    ));
+    let hits = out["hits"].as_array().unwrap();
+    let hit = hits
+        .iter()
+        .find(|h| h["path"] == "Agents/notes/memo.md")
+        .expect("clean-form regex hit");
+    let snippets: Vec<&str> = hit["snippets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert_eq!(snippets, vec!["see [[rust]] for ownership"]);
+    // Scope idents occur only in stored link suffixes and are not content.
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","query":"tony"}),
+    ));
+    assert_eq!(out["hits"], json!([]));
+}
+
+#[cfg(feature = "recall-tantivy")]
+#[test]
+fn tantivy_recall_matches_clean_forms_after_suffixed_write() {
+    let tmp = TempDir::new().unwrap();
+    let tb = frozen_toolbox(&tmp, RecallBackendKind::Tantivy);
+    seed_rust_target(&tb);
+    // Build the index before the write, so the note below enters it through
+    // the synchronous own-write hook (the index is frozen-fresh otherwise).
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","query":"tony"}),
+    ));
+    assert_eq!(out["hits"], json!([]));
+    call(
+        &tb,
+        "write_memory_note",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "content":"---\nrelated: \"[[rust]]\"\n---\nsee [[rust]] for ownership\n",
+        }),
+    )
+    .unwrap();
+    // Both the property value and the body link persist suffixed.
+    let raw = std::fs::read_to_string(
+        tmp.path()
+            .join("Agents/jarvis.tony/topics/n.jarvis.tony.md"),
+    )
+    .unwrap();
+    assert_eq!(
+        raw.matches("[[rust.jarvis.tony]]").count(),
+        2,
+        "persisted: {raw}"
+    );
+    // A regex for the clean link form hits, with a clean snippet.
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","regex":r"\[\[rust\]\]"}),
+    ));
+    let hit = out["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["path"] == "Agents/topics/n.md")
+        .expect("clean-form regex hit")
+        .clone();
+    assert_eq!(hit["snippets"], json!(["see [[rust]] for ownership"]));
+    // An `eq` filter on the clean property value matches the suffixed note.
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({
+            "agent":"jarvis","user":"tony",
+            "filters":[{"key":"related","op":"eq","value":"[[rust]]"}]
+        }),
+    ));
+    let paths: Vec<&str> = out["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&"Agents/topics/n.md"), "paths: {paths:?}");
+    // BM25 never tokenizes scope idents out of stored link suffixes.
+    let out = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","query":"tony"}),
+    ));
+    assert_eq!(out["hits"], json!([]));
+}
+
+#[test]
 fn recall_tool_absent_when_backend_off() {
     // The default `toolbox` helper builds with recall disabled (None).
     let tmp = TempDir::new().unwrap();

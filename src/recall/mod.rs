@@ -465,14 +465,9 @@ impl RecallEngine {
             .map(|(score, h)| RecallHit {
                 path: h.clean_path.clone(),
                 score: *score,
-                // Strip the caller's own suffix from snippets, mirroring the read path.
-                snippets: h
-                    .snippets
-                    .iter()
-                    .map(|s| {
-                        crate::wikilink::strip_links(s, rendered_scope, self.storage.resolver())
-                    })
-                    .collect(),
+                // Snippets are clean by construction: ingestion strips the
+                // scope's own suffixes (see `read_for_index`).
+                snippets: h.snippets.clone(),
                 modified_at: mtimes.get(&h.clean_path).map(|m| format_modified_at(*m)),
             })
             .collect();
@@ -561,6 +556,28 @@ impl RecallEngine {
     }
 }
 
+/// Read a note body the way the index's region should see it. A scoped index
+/// ingests the agent-facing view — the scope's own link suffixes stripped,
+/// identical to the `read_memory_note` transform — so full-text, regex,
+/// property filters, and snippets all evaluate against clean content. The
+/// shared index ingests verbatim: the cross-scope leak guard guarantees shared
+/// files carry no scope suffix. Every ingestion path (warm build, watcher and
+/// stat-diff reconcile, eviction rebuild, synchronous own-write) reads through
+/// this single funnel.
+fn read_for_index(
+    idx: &RegionIndex,
+    physical: &PhysicalPath,
+    storage: &Storage,
+) -> Result<String, AgentmemError> {
+    let body = storage.read(physical)?;
+    Ok(match &idx.region {
+        IndexRegion::Scoped(scope) => {
+            crate::wikilink::strip_links(&body, scope, storage.resolver())
+        }
+        IndexRegion::Shared => body,
+    })
+}
+
 /// Gather the current visible files for an index's region as `(physical, clean)`.
 fn current_files(idx: &RegionIndex, storage: &Storage) -> Vec<(PhysicalPath, String)> {
     let resolver = storage.resolver();
@@ -601,7 +618,7 @@ fn reconcile_with(idx: &mut RegionIndex, storage: &Storage) {
         if unchanged {
             continue;
         }
-        if let Ok(body) = storage.read(physical) {
+        if let Ok(body) = read_for_index(idx, physical, storage) {
             idx.backend.upsert(clean, &body);
             idx.manifest.insert(
                 key,
@@ -644,7 +661,7 @@ fn apply_path_with(idx: &mut RegionIndex, physical: &PhysicalPath, storage: &Sto
                 .get(&key)
                 .map(|meta| meta.clean_path.clone())
                 .or_else(|| clean_path_for(idx, physical, storage));
-            if let (Some(clean), Ok(body)) = (clean, storage.read(physical)) {
+            if let (Some(clean), Ok(body)) = (clean, read_for_index(idx, physical, storage)) {
                 idx.backend.upsert(&clean, &body);
                 idx.manifest.insert(
                     key,
@@ -1125,6 +1142,171 @@ mod tests {
         for hit in &results.hits {
             assert!(!hit.path.contains("secret"), "leaked path: {}", hit.path);
         }
+    }
+
+    #[test]
+    fn scoped_index_ingests_the_clean_read_view() {
+        let (tmp, engine) = engine();
+        // The stored form carries the scope suffix, as the write path persists it.
+        tmp.child("Agents/jarvis.tony/topics/links.jarvis.tony.md")
+            .write_str("see [[rust.jarvis.tony]] for ownership")
+            .unwrap();
+
+        // A regex for the clean link form matches the stripped indexed content,
+        // and the snippet is clean without any query-time repair.
+        let results = engine
+            .recall("jarvis.tony", BOTH, &regex_query(r"\[\[rust\]\]"))
+            .unwrap();
+        let hit = results
+            .hits
+            .iter()
+            .find(|h| h.path == "Agents/topics/links.md")
+            .expect("clean-form regex hit");
+        assert_eq!(hit.snippets, vec!["see [[rust]] for ownership"]);
+
+        // Scope idents occur only in stored link suffixes and are not content.
+        let results = engine.recall("jarvis.tony", BOTH, &query("tony")).unwrap();
+        assert!(
+            results.hits.is_empty(),
+            "scope ident matched as content: {:?}",
+            results.hits
+        );
+    }
+
+    #[test]
+    fn shared_index_ingests_verbatim() {
+        let (tmp, engine) = engine();
+        // A shared note (externally written) may contain suffix-looking text;
+        // the shared index never strips, so queries match it exactly as stored.
+        tmp.child("Actions/plan.md")
+            .write_str("tracked in [[plan.jarvis.tony]] for now")
+            .unwrap();
+        let results = engine
+            .recall("jarvis.tony", BOTH, &query("plan.jarvis.tony"))
+            .unwrap();
+        let hit = results
+            .hits
+            .iter()
+            .find(|h| h.path == "Actions/plan.md")
+            .expect("verbatim shared hit");
+        assert_eq!(
+            hit.snippets,
+            vec!["tracked in [[plan.jarvis.tony]] for now"]
+        );
+    }
+
+    #[test]
+    fn every_ingestion_path_strips_identically() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("Agents/jarvis.tony/topics/links.jarvis.tony.md")
+            .write_str("see [[rust.jarvis.tony]] for ownership")
+            .unwrap();
+        tmp.child("Agents/jarvis.sam/topics/other.jarvis.sam.md")
+            .write_str("unrelated")
+            .unwrap();
+        let resolver = PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            camino::Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        );
+        let storage = Arc::new(Storage::new(resolver, true, false, &[]));
+        // A cap of one resident scope (so a sam query evicts tony) and an
+        // hour-long freshness (so only the exercised path re-ingests).
+        let config = RecallConfig {
+            backend: RecallBackendKind::Simple,
+            watch_debounce: std::time::Duration::from_secs(3600),
+            regex_scan_byte_cap: usize::MAX,
+            max_resident_scopes: 1,
+            freshness: std::time::Duration::from_secs(3600),
+        };
+        let engine = RecallEngine::new(storage, config).unwrap();
+
+        let tony_snippets = |engine: &RecallEngine| {
+            // The scope ident never matches as content on any ingestion path.
+            assert!(
+                engine
+                    .recall("jarvis.tony", BOTH, &query("tony"))
+                    .unwrap()
+                    .hits
+                    .is_empty(),
+                "scope ident matched as content"
+            );
+            engine
+                .recall("jarvis.tony", BOTH, &regex_query(r"\[\[rust\]\]"))
+                .unwrap()
+                .hits
+                .iter()
+                .find(|h| h.path == "Agents/topics/links.md")
+                .expect("clean-form hit")
+                .snippets
+                .clone()
+        };
+
+        // 1. Startup warm build.
+        engine.warm();
+        let warm = tony_snippets(&engine);
+        assert_eq!(warm, vec!["see [[rust]] for ownership"]);
+
+        // 2. The synchronous own-write hook re-ingests the same note.
+        let vpath = crate::path::VirtualPath::new("Agents/topics/links.md").unwrap();
+        let physical = engine
+            .storage
+            .resolver()
+            .resolve("jarvis.tony", &vpath)
+            .unwrap();
+        engine.on_write("jarvis.tony", Region::InsideAgentsFolder, &physical);
+        let own_write = tony_snippets(&engine);
+
+        // 3. Rebuild after eviction: the sam query makes tony the LRU victim.
+        engine
+            .recall("jarvis.sam", BOTH, &query("unrelated"))
+            .unwrap();
+        let rebuilt = tony_snippets(&engine);
+
+        assert_eq!(warm, own_write);
+        assert_eq!(warm, rebuilt);
+    }
+
+    #[cfg(feature = "recall-tantivy")]
+    #[test]
+    fn tantivy_index_ingests_the_clean_read_view() {
+        let tmp = TempDir::new().unwrap();
+        tmp.child("Agents/jarvis.tony/topics/links.jarvis.tony.md")
+            .write_str("see [[rust.jarvis.tony]] for ownership")
+            .unwrap();
+        let resolver = PathResolver::new(
+            tmp.path().canonicalize().unwrap(),
+            camino::Utf8PathBuf::from("Agents"),
+            Scheme::parse("<agent>.<user>").unwrap(),
+        );
+        let storage = Arc::new(Storage::new(resolver, true, false, &[]));
+        let config = RecallConfig {
+            backend: RecallBackendKind::Tantivy,
+            watch_debounce: std::time::Duration::from_millis(0),
+            regex_scan_byte_cap: usize::MAX,
+            max_resident_scopes: 256,
+            freshness: std::time::Duration::from_millis(0),
+        };
+        let engine = RecallEngine::new(storage, config).unwrap();
+
+        // The clean link form matches under regex, with a clean snippet.
+        let results = engine
+            .recall("jarvis.tony", BOTH, &regex_query(r"\[\[rust\]\]"))
+            .unwrap();
+        let hit = results
+            .hits
+            .iter()
+            .find(|h| h.path == "Agents/topics/links.md")
+            .expect("clean-form regex hit");
+        assert_eq!(hit.snippets, vec!["see [[rust]] for ownership"]);
+
+        // BM25 never tokenizes scope idents out of stored link suffixes.
+        let results = engine.recall("jarvis.tony", BOTH, &query("tony")).unwrap();
+        assert!(
+            results.hits.is_empty(),
+            "scope ident matched as content: {:?}",
+            results.hits
+        );
     }
 
     #[cfg(feature = "recall-tantivy")]
