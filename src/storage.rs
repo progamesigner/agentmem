@@ -188,11 +188,13 @@ impl Storage {
 
     /// Read the current contents (treating a missing file as absent), hand them
     /// to `f` to compute the new contents, and persist atomically — all under the
-    /// per-target lock so concurrent callers serialise. Used by the diary append.
+    /// per-target lock so concurrent callers serialise. An `Err` from `f` aborts
+    /// with the file unchanged. Used by the diary append, the verbatim append,
+    /// and the frontmatter property merge.
     pub fn read_modify_write(
         &self,
         physical: &PhysicalPath,
-        f: impl FnOnce(Option<String>) -> String,
+        f: impl FnOnce(Option<String>) -> Result<String, AgentmemError>,
     ) -> Result<usize, AgentmemError> {
         self.with_target_lock(physical.as_path(), || {
             let current = match std::fs::read_to_string(physical.as_path()) {
@@ -200,7 +202,7 @@ impl Storage {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(AgentmemError::io("reading note", &e)),
             };
-            let next = f(current);
+            let next = f(current)?;
             self.write_atomic_locked(physical, &next)
         })
     }
@@ -987,7 +989,7 @@ mod tests {
             let physical = physical.clone();
             handles.push(std::thread::spawn(move || {
                 s.read_modify_write(&physical, |cur| {
-                    format!("{}line{i}\n", cur.unwrap_or_default())
+                    Ok(format!("{}line{i}\n", cur.unwrap_or_default()))
                 })
                 .unwrap();
             }));

@@ -1,6 +1,5 @@
 ---
 source: tests/schema_snapshots.rs
-assertion_line: 59
 expression: "schemas_for(\"<agent>.<user>\")"
 ---
 {
@@ -307,6 +306,34 @@ expression: "schemas_for(\"<agent>.<user>\")"
       "type": "object"
     }
   },
+  "read_note_properties": {
+    "description": "Read a note's frontmatter properties as a JSON object in `{ properties }`. Absent or malformed frontmatter yields an empty object.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "The virtual path of the note, relative to the vault root.",
+          "type": "string"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "user",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
   "rename_memory_note": {
     "description": "Move a single note from `path` to `new_path`, rewriting every visible incoming link (decorations preserved) to resolve to the new location. The destination must not already exist.",
     "input_schema": {
@@ -336,6 +363,40 @@ expression: "schemas_for(\"<agent>.<user>\")"
         "user",
         "path",
         "new_path"
+      ],
+      "type": "object"
+    }
+  },
+  "update_note_properties": {
+    "description": "Merge a JSON object into a note's frontmatter atomically: each key is upserted, an explicit `null` deletes a key, and the note body is untouched. The block is created when absent, removed when the merge empties it, and re-serialized in normalized form (stable key order; comments and formatting are not preserved). Returns the full post-update `{ properties }`.",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "description": "Scope key 'agent' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "description": "The virtual path of the note, relative to the vault root. The note must\nalready exist.",
+          "type": "string"
+        },
+        "properties": {
+          "additionalProperties": true,
+          "description": "The properties to merge into the note's frontmatter. Each key is upserted\nwith its JSON value (strings, numbers, booleans, arrays, and nested\nobjects round-trip); a key supplied with an explicit `null` is deleted.",
+          "type": "object"
+        },
+        "user": {
+          "description": "Scope key 'user' identifying the caller.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "user",
+        "path",
+        "properties"
       ],
       "type": "object"
     }

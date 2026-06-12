@@ -23,9 +23,10 @@ path = "src/lib.rs"
 default = ["transport-http"]
 transport-http = ["dep:axum", "rmcp/transport-streamable-http-server"]
 # The opt-in tantivy recall backend (BM25 ranking + frontmatter property filters).
-# Off by default: a default build carries neither tantivy nor a YAML parser and
-# runs the lightweight `simple` backend.
-recall-tantivy = ["dep:tantivy", "dep:serde_yaml"]
+# Off by default: a default build carries no tantivy and runs the lightweight
+# `simple` backend. (YAML frontmatter parsing is unconditional — the property
+# tools need it on every build.)
+recall-tantivy = ["dep:tantivy"]
 
 [dependencies]
 rmcp = { version = "1.7", features = ["server", "transport-io"] }
@@ -50,7 +51,7 @@ globset = "0.4.18"
 notify = "6.1.1"
 axum = { version = "0.8.9", optional = true }
 tantivy = { version = "0.22.0", optional = true }
-serde_yaml = { version = "0.9.34", optional = true }
+serde_yaml = "0.9.34"
 
 [dev-dependencies]
 assert_fs = "1.1.4"

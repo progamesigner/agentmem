@@ -5,7 +5,6 @@
 
 pub mod config;
 pub mod error;
-#[cfg(feature = "recall-tantivy")]
 pub mod frontmatter;
 pub mod mcp;
 pub mod path;

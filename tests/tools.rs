@@ -59,6 +59,11 @@ fn recall_toolbox_tz(tmp: &TempDir, timezone: Tz) -> Toolbox {
 /// freshness and debounce, no watcher started): after the first build, only the
 /// server's own `recall_on_write` notifications can update it.
 fn frozen_recall_toolbox(tmp: &TempDir) -> Toolbox {
+    frozen_toolbox(tmp, RecallBackendKind::Simple)
+}
+
+/// [`frozen_recall_toolbox`] with a configurable backend.
+fn frozen_toolbox(tmp: &TempDir, backend: RecallBackendKind) -> Toolbox {
     let mk = || {
         PathResolver::new(
             tmp.path().canonicalize().unwrap(),
@@ -68,7 +73,7 @@ fn frozen_recall_toolbox(tmp: &TempDir) -> Toolbox {
     };
     let storage = Storage::new(mk(), true, false, &[]);
     let config = RecallConfig {
-        backend: RecallBackendKind::Simple,
+        backend,
         watch_debounce: Duration::from_secs(3600),
         regex_scan_byte_cap: usize::MAX,
         max_resident_scopes: 256,
@@ -1965,6 +1970,328 @@ fn delete_other_scope_is_unreachable() {
             .join("Agents/jarvis.sam/topics/n.jarvis.sam.md")
             .exists()
     );
+}
+
+// --- read_note_properties / update_note_properties ---
+
+/// Seed a note for the property tests and return its physical path on disk.
+fn seed_note(tmp: &TempDir, tb: &Toolbox, content: &str) -> std::path::PathBuf {
+    call(
+        tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md","content":content}),
+    )
+    .unwrap();
+    tmp.path()
+        .join("Agents/jarvis.tony/topics/n.jarvis.tony.md")
+}
+
+#[test]
+fn properties_read_returns_frontmatter_as_json() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    seed_note(
+        &tmp,
+        &tb,
+        "---\ntags: [rust, async]\nstatus: draft\n---\nbody\n",
+    );
+    let body = structured(call(
+        &tb,
+        "read_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
+    ));
+    assert_eq!(
+        body["properties"],
+        json!({ "tags": ["rust", "async"], "status": "draft" })
+    );
+}
+
+#[test]
+fn properties_read_empty_for_absent_or_malformed_frontmatter() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for content in ["no fence here\n", "---\n: : not valid : :\n---\nbody\n"] {
+        seed_note(&tmp, &tb, content);
+        let body = structured(call(
+            &tb,
+            "read_note_properties",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/n.md"}),
+        ));
+        assert_eq!(body["properties"], json!({}), "for {content:?}");
+    }
+}
+
+#[test]
+fn properties_read_gating_matches_read_memory_note() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "read_note_properties",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/nope.md"}),
+        ),
+        "not_found",
+    );
+    assert_code(
+        call(
+            &tb,
+            "read_note_properties",
+            json!({"agent":"jarvis","user":"tony","path":"Agents/topics/.secret.md"}),
+        ),
+        "path_not_permitted",
+    );
+    let scoped = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Scoped);
+    write_outside(&tmp, "Actions/release.md", "shared");
+    assert_code(
+        call(
+            &scoped,
+            "read_note_properties",
+            json!({"agent":"jarvis","user":"tony","path":"Actions/release.md"}),
+        ),
+        "path_not_permitted",
+    );
+}
+
+#[test]
+fn properties_read_root_core_file_is_readable() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony","which":"persona","content":"soul"}),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "read_note_properties",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/PERSONA.md"}),
+    ));
+    assert_eq!(body["properties"], json!({}));
+}
+
+#[test]
+fn properties_update_merges_and_returns_full_set_with_body_untouched() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let physical = seed_note(
+        &tmp,
+        &tb,
+        "---\nstatus: draft\npriority: 2\n---\nThe body.\n",
+    );
+    let body = structured(call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "properties": { "status": "done", "reviewed": true, "priority": null },
+        }),
+    ));
+    assert_eq!(
+        body["properties"],
+        json!({ "status": "done", "reviewed": true })
+    );
+    // Normalized block (sorted keys), body byte-identical.
+    assert_eq!(
+        std::fs::read_to_string(physical).unwrap(),
+        "---\nreviewed: true\nstatus: done\n---\nThe body.\n"
+    );
+}
+
+#[test]
+fn properties_update_creates_block_when_absent() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let physical = seed_note(&tmp, &tb, "Just the body.\n");
+    call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "properties": { "status": "draft" },
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(physical).unwrap(),
+        "---\nstatus: draft\n---\nJust the body.\n"
+    );
+}
+
+#[test]
+fn properties_update_removes_emptied_block() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let physical = seed_note(&tmp, &tb, "---\nstatus: draft\n---\nThe body.\n");
+    let body = structured(call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+            "properties": { "status": null },
+        }),
+    ));
+    assert_eq!(body["properties"], json!({}));
+    assert_eq!(std::fs::read_to_string(physical).unwrap(), "The body.\n");
+}
+
+#[test]
+fn properties_update_malformed_fence_is_invalid_argument_and_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let content = "---\n: : not valid : :\n---\nbody\n";
+    let physical = seed_note(&tmp, &tb, content);
+    assert_code(
+        call(
+            &tb,
+            "update_note_properties",
+            json!({
+                "agent":"jarvis","user":"tony","path":"Agents/topics/n.md",
+                "properties": { "status": "done" },
+            }),
+        ),
+        "invalid_argument",
+    );
+    assert_eq!(std::fs::read_to_string(physical).unwrap(), content);
+}
+
+#[test]
+fn properties_update_root_core_file_is_reserved_naming_wrapper() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    for (f, wrapper) in [
+        ("MEMORY.md", "evolve_core_persona"),
+        ("HEARTBEAT.md", "update_task_heartbeat"),
+    ] {
+        let res = call(
+            &tb,
+            "update_note_properties",
+            json!({
+                "agent":"jarvis","user":"tony","path":format!("Agents/{f}"),
+                "properties": { "status": "done" },
+            }),
+        );
+        match res {
+            Err(e) => {
+                assert_eq!(e.code().as_str(), "path_not_permitted", "for {f}");
+                assert!(
+                    e.to_string().contains(wrapper),
+                    "message should name the wrapper for {f}: {e}"
+                );
+            }
+            Ok(_) => panic!("expected rejection updating root {f}"),
+        }
+    }
+}
+
+#[test]
+fn properties_update_outside_under_namespaced_is_denied_and_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    write_outside(&tmp, "Actions/release.md", "---\nstatus: draft\n---\nx\n");
+    assert_code(
+        call(
+            &tb,
+            "update_note_properties",
+            json!({
+                "agent":"jarvis","user":"tony","path":"Actions/release.md",
+                "properties": { "status": "done" },
+            }),
+        ),
+        "write_denied",
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("Actions/release.md")).unwrap(),
+        "---\nstatus: draft\n---\nx\n"
+    );
+}
+
+#[test]
+fn properties_update_hidden_is_path_not_permitted() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "update_note_properties",
+            json!({
+                "agent":"jarvis","user":"tony","path":"Agents/topics/.hidden.md",
+                "properties": { "status": "done" },
+            }),
+        ),
+        "path_not_permitted",
+    );
+}
+
+#[test]
+fn properties_update_missing_is_not_found() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "update_note_properties",
+            json!({
+                "agent":"jarvis","user":"tony","path":"Agents/topics/nope.md",
+                "properties": { "status": "done" },
+            }),
+        ),
+        "not_found",
+    );
+    // The merge never creates the file.
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/topics/nope.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[cfg(feature = "recall-tantivy")]
+#[test]
+fn properties_update_is_immediately_recallable_via_filters() {
+    let tmp = TempDir::new().unwrap();
+    let tb = frozen_toolbox(&tmp, RecallBackendKind::Tantivy);
+    call(
+        &tb,
+        "write_memory_note",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/task.md",
+            "content":"---\nstatus: draft\n---\nShip the feature.\n",
+        }),
+    )
+    .unwrap();
+    let filters = json!([{ "key": "status", "op": "eq", "value": "done" }]);
+    // First query builds the index; the draft note does not match.
+    let body = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","filters":filters}),
+    ));
+    assert_eq!(body["hits"], json!([]));
+    // With the watcher off and the index frozen-fresh, only the synchronous
+    // recall_on_write can make the updated value visible.
+    call(
+        &tb,
+        "update_note_properties",
+        json!({
+            "agent":"jarvis","user":"tony","path":"Agents/topics/task.md",
+            "properties": { "status": "done" },
+        }),
+    )
+    .unwrap();
+    let body = structured(call(
+        &tb,
+        "recall_memory_notes",
+        json!({"agent":"jarvis","user":"tony","filters":filters}),
+    ));
+    let paths: Vec<&str> = body["hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, vec!["Agents/topics/task.md"]);
 }
 
 // --- wrapper-only root files ---

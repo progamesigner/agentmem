@@ -1,5 +1,5 @@
 //! The agent-facing tool surface: schema generation, scope extraction, and the
-//! tool handlers (the eleven memory-note tools plus `recall_memory_notes` when
+//! tool handlers (the thirteen memory-note tools plus `recall_memory_notes` when
 //! the recall backend is enabled).
 //!
 //! Each tool's input schema is assembled at startup by merging the
@@ -45,6 +45,8 @@ pub const TOOL_NAMES: &[&str] = &[
     "edit_memory_note",
     "delete_memory_note",
     "rename_memory_note",
+    "read_note_properties",
+    "update_note_properties",
     "load_session_context",
     "evolve_core_persona",
     "update_task_heartbeat",
@@ -163,6 +165,25 @@ struct RenameFields {
     /// The destination virtual path, relative to the vault root. Must not
     /// already name an existing note.
     new_path: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct PropertiesReadFields {
+    /// The virtual path of the note, relative to the vault root.
+    path: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct PropertiesUpdateFields {
+    /// The virtual path of the note, relative to the vault root. The note must
+    /// already exist.
+    path: String,
+    /// The properties to merge into the note's frontmatter. Each key is upserted
+    /// with its JSON value (strings, numbers, booleans, arrays, and nested
+    /// objects round-trip); a key supplied with an explicit `null` is deleted.
+    properties: Map<String, Value>,
 }
 
 #[derive(JsonSchema)]
@@ -328,6 +349,8 @@ impl Toolbox {
             "edit_memory_note" => self.edit_memory_note(args),
             "delete_memory_note" => self.delete_memory_note(args),
             "rename_memory_note" => self.rename_memory_note(args),
+            "read_note_properties" => self.read_note_properties(args),
+            "update_note_properties" => self.update_note_properties(args),
             "load_session_context" => self.load_session_context(args),
             "evolve_core_persona" => self.evolve_core_persona(args),
             "update_task_heartbeat" => self.update_task_heartbeat(args),
@@ -655,11 +678,10 @@ impl Toolbox {
         })))
     }
 
-    /// Read one note for `scope` with full single-read semantics: policy gate by
-    /// region, suffix resolution, visibility check, read, own-suffix link strip.
-    /// Shared by `read_memory_note` and `read_memory_notes` so the two cannot
-    /// drift.
-    fn read_one(&self, scope: &str, vpath: &VirtualPath) -> Result<String, AgentmemError> {
+    /// Gate and read one note's stored bytes for `scope`: policy gate by region,
+    /// suffix resolution, visibility check, read — no link transform. Shared by
+    /// every reader so their gating cannot drift.
+    fn read_raw(&self, scope: &str, vpath: &VirtualPath) -> Result<String, AgentmemError> {
         let resolver = self.storage.resolver();
         let region = resolver.detect_region(vpath);
         self.policy
@@ -671,7 +693,14 @@ impl Toolbox {
                 virtual_path: vpath.as_str().to_string(),
             });
         }
-        Ok(self.strip_links_for(scope, &self.storage.read(&physical)?))
+        self.storage.read(&physical)
+    }
+
+    /// Read one note for `scope` with full single-read semantics: [`Self::read_raw`]
+    /// plus the own-suffix link strip. Shared by `read_memory_note` and
+    /// `read_memory_notes` so the two cannot drift.
+    fn read_one(&self, scope: &str, vpath: &VirtualPath) -> Result<String, AgentmemError> {
+        Ok(self.strip_links_for(scope, &self.read_raw(scope, vpath)?))
     }
 
     fn read_memory_note(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
@@ -757,9 +786,11 @@ impl Toolbox {
         let content = self.expand_links_for(&scope, &vpath, &content)?;
         self.gated_write(&scope, &vpath, |physical, storage| {
             if append {
-                storage.read_modify_write(physical, |current| match current {
-                    Some(existing) => format!("{existing}{content}"),
-                    None => content.clone(),
+                storage.read_modify_write(physical, |current| {
+                    Ok(match current {
+                        Some(existing) => format!("{existing}{content}"),
+                        None => content.clone(),
+                    })
                 })
             } else {
                 storage.write_atomic(physical, &content)
@@ -943,6 +974,52 @@ impl Toolbox {
         })))
     }
 
+    fn read_note_properties(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let scope = self.resolve_scope(args, &["path"])?;
+        let vpath = VirtualPath::new(&require_str(args, "path")?)?;
+        // The stored bytes, not the link-stripped view: properties are data, and
+        // the result must match what the recall indexer parses.
+        let content = self.read_raw(&scope, &vpath)?;
+        Ok(ok_json(
+            json!({ "properties": crate::frontmatter::parse(&content).props }),
+        ))
+    }
+
+    fn update_note_properties(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
+        let scope = self.resolve_scope(args, &["path", "properties"])?;
+        let vpath = VirtualPath::new(&require_str(args, "path")?)?;
+        let updates = require_object(args, "properties")?;
+        self.reject_if_root_reserved(&vpath)?;
+        let region = self.storage.resolver().detect_region(&vpath);
+        self.policy
+            .gate_write(region)
+            .map_err(|e| Self::policy_err(e, &vpath))?;
+        let physical = self.storage.resolver().resolve(&scope, &vpath)?;
+        if !self.storage.is_visible(&physical) {
+            return Err(AgentmemError::PathNotPermitted {
+                virtual_path: vpath.as_str().to_string(),
+            });
+        }
+        // The whole merge runs under the per-target lock so concurrent updates
+        // to different keys both land. Property values are data — no link
+        // transform on either the frontmatter or the (untouched) body.
+        let mut merged = Value::Object(Map::new());
+        self.storage.read_modify_write(&physical, |current| {
+            let existing = current.ok_or_else(|| AgentmemError::NotFound {
+                virtual_path: vpath.as_str().to_string(),
+            })?;
+            let next = crate::frontmatter::merge(&existing, &updates).map_err(|e| {
+                AgentmemError::InvalidArgument {
+                    message: e.to_string(),
+                }
+            })?;
+            merged = crate::frontmatter::parse(&next).props;
+            Ok(next)
+        })?;
+        self.recall_on_write(&scope, region, &physical);
+        Ok(ok_json(json!({ "properties": merged })))
+    }
+
     fn load_session_context(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
         // Accept only scope parameters (no `path`/`which`).
         let scope = self.scope_map(args, &[])?;
@@ -1036,12 +1113,12 @@ impl Toolbox {
                 virtual_path: vpath.as_str().to_string(),
             });
         }
-        let written = self
-            .storage
-            .read_modify_write(&physical, |current| match current {
+        let written = self.storage.read_modify_write(&physical, |current| {
+            Ok(match current {
                 Some(existing) => format!("{existing}\n{heading}\n{content}\n"),
                 None => format!("# {date}\n\n{heading}\n{content}\n"),
-            })?;
+            })
+        })?;
         self.recall_on_write(&scope, region, &physical);
         Ok(ok_json(json!({ "bytes_written": written })))
     }
@@ -1256,6 +1333,20 @@ fn require_str_array(args: &JsonObject, key: &str) -> Result<Vec<String>, Agentm
         .collect()
 }
 
+/// Require a JSON-object argument, erroring with `invalid_argument` when absent
+/// or of the wrong type.
+fn require_object(args: &JsonObject, key: &str) -> Result<Map<String, Value>, AgentmemError> {
+    match args.get(key) {
+        Some(Value::Object(o)) => Ok(o.clone()),
+        Some(_) => Err(AgentmemError::InvalidArgument {
+            message: format!("argument '{key}' must be an object"),
+        }),
+        None => Err(AgentmemError::InvalidArgument {
+            message: format!("missing required argument '{key}'"),
+        }),
+    }
+}
+
 fn opt_str(args: &JsonObject, key: &str) -> Result<Option<String>, AgentmemError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1421,6 +1512,16 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
             "rename_memory_note",
             "Move a single note from `path` to `new_path`, rewriting every visible incoming link (decorations preserved) to resolve to the new location. The destination must not already exist.",
             merge_schema(scheme, fields_schema::<RenameFields>()),
+        ),
+        tool(
+            "read_note_properties",
+            "Read a note's frontmatter properties as a JSON object in `{ properties }`. Absent or malformed frontmatter yields an empty object.",
+            merge_schema(scheme, fields_schema::<PropertiesReadFields>()),
+        ),
+        tool(
+            "update_note_properties",
+            "Merge a JSON object into a note's frontmatter atomically: each key is upserted, an explicit `null` deletes a key, and the note body is untouched. The block is created when absent, removed when the merge empties it, and re-serialized in normalized form (stable key order; comments and formatting are not preserved). Returns the full post-update `{ properties }`.",
+            merge_schema(scheme, fields_schema::<PropertiesUpdateFields>()),
         ),
         tool(
             "load_session_context",
