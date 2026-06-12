@@ -108,9 +108,18 @@ How the managed files are written:
 - The task heartbeat is updated through `update_task_heartbeat`, which targets
   `HEARTBEAT.md`.
 - The core root files (`PERSONA.md`, `PROMPT.md`, `RULES.md`, `USER.md`,
-  `MEMORY.md`) are changed through `evolve_core_persona`. Generic
+  `MEMORY.md`) are changed through `evolve_core_persona` — one file via
+  `which`/`content`, or several at once via its `updates` batch form. Generic
   `write_memory_note`/`edit_memory_note`/`delete_memory_note` may only target
   paths under a subfolder; root-level core files are reserved for the wrappers.
+
+Bootstrapping: when foundational files are missing (their sections above read
+\"(not yet recorded …)\"), interview the user first — ask as many questions as
+you need to understand identity, role, working style, and boundaries — before
+writing anything. Then distill the answers into your own concise wording,
+written for fast comprehension by future agent sessions, not a verbatim
+transcript of the user's words, and commit all affected files in one
+`evolve_core_persona` call with multiple `updates`.
 
 Line caps (enforced on tool writes): `USER.md` ≤ 100 lines, `MEMORY.md` ≤ 200 lines.
 </AGENTMEM:LAYOUT>

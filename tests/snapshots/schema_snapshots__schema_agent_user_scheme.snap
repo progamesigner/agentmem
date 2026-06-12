@@ -105,7 +105,7 @@ expression: "schemas_for(\"<agent>.<user>\")"
     }
   },
   "evolve_core_persona": {
-    "description": "Atomically replace one foundational session file (persona|prompt|rules|user|memory) selected by `which`. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
+    "description": "Atomically replace foundational session files (persona|prompt|rules|user|memory): a single file via `which` + `content`, or several in one call via an `updates` array of 1–5 { which, content } entries (no duplicate `which`), validated as a unit before any write — supply exactly one form. When bootstrapping missing foundational files, interview the user first (identity, role, working style, boundaries), distill the answers into your own concise wording, then commit all affected files in one batch call. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -115,8 +115,43 @@ expression: "schemas_for(\"<agent>.<user>\")"
           "type": "string"
         },
         "content": {
-          "description": "The full new contents of the selected file. `user` content must be ≤ 100\nlines and `memory` content ≤ 200 lines.",
-          "type": "string"
+          "description": "Single form: the full new contents of the selected file. `user` content\nmust be ≤ 100 lines and `memory` content ≤ 200 lines.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updates": {
+          "description": "Batch form: 1 to 5 `{ which, content }` entries, each with the same\nsemantics as the single form; duplicate `which` values are rejected.\nEvery entry is validated — `which` domain, line caps, link expansion —\nbefore any file is written: any failure rejects the whole call leaving\nevery foundational file unchanged. Entries are applied in request order;\nthe result carries one `{ which, bytes_written }` entry per update, in\nrequest order. Each applied entry is atomic, but the batch is not\ntransactional across files: a crash mid-apply may leave a prefix of the\nentries applied.",
+          "items": {
+            "description": "One batch `evolve_core_persona` entry: a foundational file and its full new\ncontents, with the same per-entry semantics as the single form.",
+            "properties": {
+              "content": {
+                "description": "The full new contents of the selected file. `user` content must be ≤ 100\nlines and `memory` content ≤ 200 lines.",
+                "type": "string"
+              },
+              "which": {
+                "description": "Which foundational file to replace: one of persona, prompt, rules, user, memory.",
+                "enum": [
+                  "persona",
+                  "prompt",
+                  "rules",
+                  "user",
+                  "memory"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "which",
+              "content"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "user": {
           "description": "Scope key 'user' identifying the caller.",
@@ -124,22 +159,24 @@ expression: "schemas_for(\"<agent>.<user>\")"
           "type": "string"
         },
         "which": {
-          "description": "Which foundational file to replace: one of persona, prompt, rules, user, memory.",
+          "description": "Single form: which foundational file to replace — one of persona, prompt,\nrules, user, memory. Requires `content`. Exactly one of the single form\n(`which` + `content`) or the batch form (`updates`) must be supplied;\nneither or both is rejected.",
           "enum": [
             "persona",
             "prompt",
             "rules",
             "user",
-            "memory"
+            "memory",
+            null
           ],
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "agent",
-        "user",
-        "which",
-        "content"
+        "user"
       ],
       "type": "object"
     }

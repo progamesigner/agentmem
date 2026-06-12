@@ -99,6 +99,34 @@ async fn resource_template_and_read_render_context() {
 }
 
 #[tokio::test]
+async fn rendered_guide_describes_interview_then_batch_commit() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let service = serve(&tmp, "<agent>.<user>").await;
+
+    // A fresh scope: every foundational file is missing.
+    let read = service
+        .read_resource(ReadResourceRequestParams::new(
+            "agentmem://session-context/jarvis/tony",
+        ))
+        .await
+        .unwrap();
+    let text = resource_text(&read);
+    assert!(text.contains("(not yet recorded"));
+    // Interview first, covering the four bootstrap dimensions.
+    assert!(text.contains("interview the user first"));
+    assert!(text.contains("identity, role, working style, and boundaries"));
+    // Distilled into the agent's own words, not a transcript.
+    assert!(text.contains("your own concise wording"));
+    assert!(text.contains("not a verbatim\ntranscript of the user's words"));
+    // Committed in one batch call.
+    assert!(text.contains(
+        "commit all affected files in one\n`evolve_core_persona` call with multiple `updates`"
+    ));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn prompt_lists_args_and_renders() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let service = serve(&tmp, "<agent>.<user>").await;

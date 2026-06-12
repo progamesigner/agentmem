@@ -3341,6 +3341,211 @@ fn evolve_memory_over_cap_is_rejected_and_unchanged() {
     );
 }
 
+#[test]
+fn evolve_single_form_response_is_the_byte_count() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let body = structured(call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony","which":"persona","content":"soul"}),
+    ));
+    // The legacy single-form response shape, byte-identical to before the
+    // batch form existed: just the byte count.
+    assert_eq!(body, json!({"bytes_written": "soul".len()}));
+}
+
+// --- evolve_core_persona (batch form) ---
+
+#[test]
+fn evolve_batch_writes_files_with_results_in_request_order() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let body = structured(call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony","updates":[
+            {"which":"memory","content":"the index\n"},
+            {"which":"persona","content":"the persona"},
+            {"which":"user","content":"the user\n"},
+        ]}),
+    ));
+    assert_eq!(
+        body["results"],
+        json!([
+            {"which":"memory","bytes_written":"the index\n".len()},
+            {"which":"persona","bytes_written":"the persona".len()},
+            {"which":"user","bytes_written":"the user\n".len()},
+        ])
+    );
+    for (file, content) in [
+        ("MEMORY", "the index\n"),
+        ("PERSONA", "the persona"),
+        ("USER", "the user\n"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(
+                tmp.path()
+                    .join(format!("Agents/jarvis.tony/{file}.jarvis.tony.md"))
+            )
+            .unwrap(),
+            content
+        );
+    }
+    // Unselected foundational files stay absent.
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/RULES.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn evolve_batch_over_cap_entry_rejects_whole_batch_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let over_cap = "line\n".repeat(101);
+    let res = call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony","updates":[
+            {"which":"persona","content":"soul"},
+            {"which":"user","content":over_cap},
+        ]}),
+    );
+    match res {
+        Err(e) => {
+            assert_eq!(e.code().as_str(), "invalid_argument");
+            assert!(e.to_string().contains("100"), "message: {e}");
+        }
+        Ok(r) => panic!("expected error, got: {:?}", r.structured_content),
+    }
+    // Neither file — including the valid persona entry — was created.
+    for rel in [
+        "Agents/jarvis.tony/PERSONA.jarvis.tony.md",
+        "Agents/jarvis.tony/USER.jarvis.tony.md",
+    ] {
+        assert!(!tmp.path().join(rel).exists(), "{rel} must not exist");
+    }
+}
+
+#[test]
+fn evolve_batch_duplicate_which_is_rejected_and_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "evolve_core_persona",
+            json!({"agent":"jarvis","user":"tony","updates":[
+                {"which":"rules","content":"first"},
+                {"which":"rules","content":"second"},
+            ]}),
+        ),
+        "invalid_argument",
+    );
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/RULES.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
+fn evolve_batch_empty_updates_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "evolve_core_persona",
+            json!({"agent":"jarvis","user":"tony","updates":[]}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn evolve_neither_form_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "evolve_core_persona",
+            json!({"agent":"jarvis","user":"tony"}),
+        ),
+        "invalid_argument",
+    );
+}
+
+#[test]
+fn evolve_both_forms_are_rejected_and_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    assert_code(
+        call(
+            &tb,
+            "evolve_core_persona",
+            json!({"agent":"jarvis","user":"tony","which":"persona","content":"single",
+                   "updates":[{"which":"rules","content":"batch"}]}),
+        ),
+        "invalid_argument",
+    );
+    for rel in [
+        "Agents/jarvis.tony/PERSONA.jarvis.tony.md",
+        "Agents/jarvis.tony/RULES.jarvis.tony.md",
+    ] {
+        assert!(!tmp.path().join(rel).exists(), "{rel} must not exist");
+    }
+}
+
+#[test]
+fn evolve_batch_under_readonly_is_denied() {
+    let tmp = TempDir::new().unwrap();
+    let tb = toolbox(&tmp, "Agents", "<agent>.<user>", Policy::Readonly);
+    assert_code(
+        call(
+            &tb,
+            "evolve_core_persona",
+            json!({"agent":"jarvis","user":"tony",
+                   "updates":[{"which":"persona","content":"x"}]}),
+        ),
+        "write_denied",
+    );
+}
+
+#[test]
+fn evolve_batch_memory_link_persists_suffixed_and_renders_clean() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    // The link target must exist for [[rust]] to resolve, expand on write, and
+    // be stored in the suffixed on-disk form.
+    call(
+        &tb,
+        "write_memory_note",
+        json!({"agent":"jarvis","user":"tony","path":"Agents/topics/rust.md","content":"seed"}),
+    )
+    .unwrap();
+    call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony",
+               "updates":[{"which":"memory","content":"see [[rust]]"}]}),
+    )
+    .unwrap();
+    let raw = std::fs::read_to_string(tmp.path().join("Agents/jarvis.tony/MEMORY.jarvis.tony.md"))
+        .unwrap();
+    assert_eq!(raw, "see [[rust.jarvis.tony]]");
+    // The rendered session-context strips the suffix back out.
+    let body = structured(call(
+        &tb,
+        "load_session_context",
+        json!({"agent":"jarvis","user":"tony"}),
+    ));
+    assert!(body["rendered"].as_str().unwrap().contains("see [[rust]]"));
+}
+
 // --- update_task_heartbeat ---
 
 #[test]

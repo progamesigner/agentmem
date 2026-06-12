@@ -38,6 +38,9 @@ const MAX_LIMIT: u64 = 1000;
 const MAX_BATCH_READ: usize = 20;
 /// The maximum number of entries accepted by `write_memory_notes`.
 const MAX_BATCH_WRITE: usize = 20;
+/// The maximum number of entries accepted by `evolve_core_persona`'s batch form
+/// (one per foundational file).
+const MAX_BATCH_EVOLVE: usize = 5;
 
 /// The set of tool names this server exposes, in advertised order.
 pub const TOOL_NAMES: &[&str] = &[
@@ -275,14 +278,39 @@ enum Which {
     Memory,
 }
 
+/// One batch `evolve_core_persona` entry: a foundational file and its full new
+/// contents, with the same per-entry semantics as the single form.
 #[derive(JsonSchema)]
 #[allow(dead_code)]
-struct EvolveFields {
+struct EvolveUpdateEntry {
     /// Which foundational file to replace: one of persona, prompt, rules, user, memory.
     which: Which,
     /// The full new contents of the selected file. `user` content must be ≤ 100
     /// lines and `memory` content ≤ 200 lines.
     content: String,
+}
+
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+struct EvolveFields {
+    /// Single form: which foundational file to replace — one of persona, prompt,
+    /// rules, user, memory. Requires `content`. Exactly one of the single form
+    /// (`which` + `content`) or the batch form (`updates`) must be supplied;
+    /// neither or both is rejected.
+    which: Option<Which>,
+    /// Single form: the full new contents of the selected file. `user` content
+    /// must be ≤ 100 lines and `memory` content ≤ 200 lines.
+    content: Option<String>,
+    /// Batch form: 1 to 5 `{ which, content }` entries, each with the same
+    /// semantics as the single form; duplicate `which` values are rejected.
+    /// Every entry is validated — `which` domain, line caps, link expansion —
+    /// before any file is written: any failure rejects the whole call leaving
+    /// every foundational file unchanged. Entries are applied in request order;
+    /// the result carries one `{ which, bytes_written }` entry per update, in
+    /// request order. Each applied entry is atomic, but the batch is not
+    /// transactional across files: a crash mid-apply may leave a prefix of the
+    /// entries applied.
+    updates: Option<Vec<EvolveUpdateEntry>>,
 }
 
 #[derive(JsonSchema)]
@@ -1304,25 +1332,105 @@ impl Toolbox {
         ))
     }
 
+    /// Replace foundational session files: the single `which`/`content` form
+    /// writes one file with the legacy response, the batch `updates` form
+    /// validates every entry (which domain, duplicates, line caps, link
+    /// expansion, policy, visibility) before writing any file, then applies in
+    /// request order. Exactly one of the two forms must be supplied.
     fn evolve_core_persona(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        let scope = self.resolve_scope(args, &["which", "content"])?;
-        let which = require_str(args, "which")?;
-        // (filename, optional line cap)
-        let (filename, line_cap) = match which.as_str() {
-            "persona" => ("PERSONA.md", None),
-            "prompt" => ("PROMPT.md", None),
-            "rules" => ("RULES.md", None),
-            "user" => ("USER.md", Some(100usize)),
-            "memory" => ("MEMORY.md", Some(200usize)),
-            other => {
+        let scope = self.resolve_scope(args, &["which", "content", "updates"])?;
+        let has_single = args.contains_key("which") || args.contains_key("content");
+        let has_batch = args.contains_key("updates");
+        if has_single && has_batch {
+            return Err(AgentmemError::InvalidArgument {
+                message: "supply either 'which'/'content' or 'updates', not both".to_string(),
+            });
+        }
+        if !has_single && !has_batch {
+            return Err(AgentmemError::InvalidArgument {
+                message: "supply either 'which' and 'content', or an 'updates' array".to_string(),
+            });
+        }
+
+        if has_single {
+            let which = require_str(args, "which")?;
+            let (filename, line_cap) = evolve_target(&which)?;
+            let content = require_str(args, "content")?;
+            let (vpath, content) =
+                self.prepare_evolve_content(&scope, filename, line_cap, &content)?;
+            return self.gated_write(&scope, &vpath, |physical, storage| {
+                storage.write_atomic(physical, &content)
+            });
+        }
+
+        let raw_updates = match args.get("updates") {
+            Some(Value::Array(items)) => items,
+            Some(_) => {
                 return Err(AgentmemError::InvalidArgument {
-                    message: format!(
-                        "which must be one of persona|prompt|rules|user|memory, got '{other}'"
-                    ),
+                    message: "argument 'updates' must be an array".to_string(),
                 });
             }
+            None => unreachable!("has_batch checked above"),
         };
-        let content = require_str(args, "content")?;
+        if raw_updates.is_empty() {
+            return Err(AgentmemError::InvalidArgument {
+                message: "argument 'updates' must contain at least one entry".to_string(),
+            });
+        }
+        if raw_updates.len() > MAX_BATCH_EVOLVE {
+            return Err(AgentmemError::InvalidArgument {
+                message: format!("argument 'updates' must not exceed {MAX_BATCH_EVOLVE} entries"),
+            });
+        }
+
+        let resolver = self.storage.resolver();
+
+        // --- Phase 1: validate every entry and compute final contents; no writes. ---
+        let mut seen: BTreeSet<&'static str> = BTreeSet::new();
+        let mut prepared = Vec::with_capacity(raw_updates.len());
+        for raw in raw_updates {
+            let (which, content) = parse_evolve_update_entry(raw)?;
+            let (filename, line_cap) = evolve_target(&which)?;
+            if !seen.insert(filename) {
+                return Err(AgentmemError::InvalidArgument {
+                    message: format!("duplicate which '{which}' in 'updates'"),
+                });
+            }
+            let (vpath, content) =
+                self.prepare_evolve_content(&scope, filename, line_cap, &content)?;
+            let region = resolver.detect_region(&vpath);
+            self.policy
+                .gate_write(region)
+                .map_err(|e| Self::policy_err(e, &vpath))?;
+            let physical = resolver.resolve(&scope, &vpath)?;
+            if !self.storage.is_visible(&physical) {
+                return Err(AgentmemError::PathNotPermitted {
+                    virtual_path: vpath.as_str().to_string(),
+                });
+            }
+            prepared.push((which, region, physical, content));
+        }
+
+        // --- Phase 2: apply in request order. ---
+        let mut results = Vec::with_capacity(prepared.len());
+        for (which, region, physical, content) in prepared {
+            let written = self.storage.write_atomic(&physical, &content)?;
+            self.recall_on_write(&scope, region, &physical);
+            results.push(json!({ "which": which, "bytes_written": written }));
+        }
+        Ok(ok_json(json!({ "results": results })))
+    }
+
+    /// Validate one `evolve_core_persona` target: cap-check the agent-facing
+    /// content, resolve the conventional vpath, and expand links. Returns the
+    /// vpath and the final on-disk content; writes nothing.
+    fn prepare_evolve_content(
+        &self,
+        scope: &str,
+        filename: &'static str,
+        line_cap: Option<usize>,
+        content: &str,
+    ) -> Result<(VirtualPath, String), AgentmemError> {
         if let Some(cap) = line_cap {
             let lines = content.lines().count();
             if lines > cap {
@@ -1337,10 +1445,8 @@ impl Toolbox {
         // Expand link targets so core files (e.g. a MEMORY.md index of `[[notes]]`)
         // resolve in Obsidian; the line caps above count the agent-facing content,
         // and expansion never changes the line count.
-        let content = self.expand_links_for(&scope, &vpath, &content)?;
-        self.gated_write(&scope, &vpath, |physical, storage| {
-            storage.write_atomic(physical, &content)
-        })
+        let content = self.expand_links_for(scope, &vpath, content)?;
+        Ok((vpath, content))
     }
 
     fn update_task_heartbeat(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
@@ -1773,6 +1879,52 @@ fn parse_batch_write_entry(entry: &Value) -> Result<(String, String, bool), Agen
     Ok((path.clone(), content.clone(), append))
 }
 
+/// Map an `evolve_core_persona` `which` value to its conventional filename and
+/// optional line cap.
+fn evolve_target(which: &str) -> Result<(&'static str, Option<usize>), AgentmemError> {
+    match which {
+        "persona" => Ok(("PERSONA.md", None)),
+        "prompt" => Ok(("PROMPT.md", None)),
+        "rules" => Ok(("RULES.md", None)),
+        "user" => Ok(("USER.md", Some(100))),
+        "memory" => Ok(("MEMORY.md", Some(200))),
+        other => Err(AgentmemError::InvalidArgument {
+            message: format!(
+                "which must be one of persona|prompt|rules|user|memory, got '{other}'"
+            ),
+        }),
+    }
+}
+
+/// Parse one `evolve_core_persona` batch entry: a `{ which, content }` object.
+/// A malformed entry is a call-level `invalid_argument` — the batch is
+/// all-or-nothing, so nothing is validated further once any entry is malformed.
+fn parse_evolve_update_entry(entry: &Value) -> Result<(String, String), AgentmemError> {
+    let Value::Object(fields) = entry else {
+        return Err(AgentmemError::InvalidArgument {
+            message: "argument 'updates' entries must be { which, content } objects".to_string(),
+        });
+    };
+    for key in fields.keys() {
+        if !matches!(key.as_str(), "which" | "content") {
+            return Err(AgentmemError::InvalidArgument {
+                message: format!("unexpected key '{key}' in 'updates' entry"),
+            });
+        }
+    }
+    let Some(Value::String(which)) = fields.get("which") else {
+        return Err(AgentmemError::InvalidArgument {
+            message: "entries in 'updates' must carry a string 'which'".to_string(),
+        });
+    };
+    let Some(Value::String(content)) = fields.get("content") else {
+        return Err(AgentmemError::InvalidArgument {
+            message: "entries in 'updates' must carry a string 'content'".to_string(),
+        });
+    };
+    Ok((which.clone(), content.clone()))
+}
+
 /// Slice `content` to a 1-based line range. Lines are delimited by `\n` with
 /// delimiters preserved — `\r\n` content keeps the `\r` inside its line, and a
 /// missing final newline still counts as a final line — so concatenating
@@ -1903,7 +2055,7 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
         ),
         tool(
             "evolve_core_persona",
-            "Atomically replace one foundational session file (persona|prompt|rules|user|memory) selected by `which`. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
+            "Atomically replace foundational session files (persona|prompt|rules|user|memory): a single file via `which` + `content`, or several in one call via an `updates` array of 1–5 { which, content } entries (no duplicate `which`), validated as a unit before any write — supply exactly one form. When bootstrapping missing foundational files, interview the user first (identity, role, working style, boundaries), distill the answers into your own concise wording, then commit all affected files in one batch call. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
             merge_schema(scheme, fields_schema::<EvolveFields>()),
         ),
         tool(
