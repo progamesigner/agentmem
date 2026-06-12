@@ -84,12 +84,16 @@ prefers `application/json`, the endpoint SHALL instead return a JSON object
   foundational filenames
 
 ### Requirement: Authentication reuse
-The endpoint SHALL sit behind the same bearer-token gate as `/mcp`. When
+The endpoint SHALL sit behind the same authentication gate as `/mcp`. When
 `AGENTMEM_HTTP_BEARER` is set, `GET /v1/context` SHALL require a matching
 `Authorization: Bearer <token>` header and SHALL respond `401` otherwise. When
-the bearer is unset the endpoint is unauthenticated, like `/mcp`. The probe routes
-`GET /healthz` and `GET /readyz` SHALL remain reachable without authentication
-regardless.
+`AGENTMEM_HTTP_TOKENS_FILE` is configured, a request presenting a configured
+scoped token SHALL additionally have its query-parameter scope checked against
+that token's grant: a mismatch SHALL be rejected with `403` and a JSON
+`{ "error": … }` body naming the offending key, before any rendering. When
+neither variable is set the endpoint is unauthenticated, like `/mcp`. The probe
+routes `GET /healthz` and `GET /readyz` SHALL remain reachable without
+authentication regardless.
 
 #### Scenario: Missing bearer is rejected when configured
 - **WHEN** the server is started with `AGENTMEM_HTTP_BEARER=secret` and
@@ -103,9 +107,21 @@ regardless.
 - **THEN** the server responds `200 OK` with the rendered context
 
 #### Scenario: Unauthenticated when bearer unset
-- **WHEN** `AGENTMEM_HTTP_BEARER` is unset and `GET /v1/context?agent=jarvis&user=tony`
-  is sent without an `Authorization` header
+- **WHEN** both `AGENTMEM_HTTP_BEARER` and `AGENTMEM_HTTP_TOKENS_FILE` are unset
+  and `GET /v1/context?agent=jarvis&user=tony` is sent without an
+  `Authorization` header
 - **THEN** the server responds `200 OK` with the rendered context
+
+#### Scenario: Scoped token renders only its own scope
+- **WHEN** the tokens file grants the presented token
+  `{ "agent": "jarvis", "user": "*" }` and the request is
+  `GET /v1/context?agent=jarvis&user=tony`
+- **THEN** the server responds `200 OK` with the rendered context
+
+#### Scenario: Scope mismatch yields 403
+- **WHEN** the same token requests `GET /v1/context?agent=friday&user=tony`
+- **THEN** the server responds `403` with a JSON `{ "error": … }` body naming
+  `agent`, and no context is rendered
 
 ### Requirement: Error mapping
 The endpoint SHALL map invalid scope input to HTTP `400` with a JSON body of the
@@ -148,3 +164,4 @@ authentication regardless of `AGENTMEM_HTTP_BEARER`. When recall is `off`, `GET
 - **WHEN** `AGENTMEM_HTTP_BEARER` is set and `GET /healthz` or `GET /readyz` is
   requested without an `Authorization` header
 - **THEN** the response is the normal probe result, not `401`
+
