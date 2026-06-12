@@ -48,8 +48,18 @@ pub async fn serve(config: &Config, server: AgentmemServer) -> anyhow::Result<()
         Transport::Http {
             bind,
             bearer,
+            tokens,
             allowed_hosts,
-        } => http::serve(*bind, bearer.clone(), allowed_hosts.clone(), server).await,
+        } => {
+            http::serve(
+                *bind,
+                bearer.clone(),
+                tokens.clone(),
+                allowed_hosts.clone(),
+                server,
+            )
+            .await
+        }
         #[cfg(not(feature = "transport-http"))]
         Transport::Http { .. } => Err(anyhow::anyhow!(
             "HTTP transport requested but this binary was built without the `transport-http` feature"

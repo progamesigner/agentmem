@@ -22,6 +22,7 @@ use schemars::generate::SchemaSettings;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::config::Grant;
 use crate::error::AgentmemError;
 use crate::path::{PhysicalPath, VirtualPath};
 use crate::policy::{Policy, PolicyError, Region};
@@ -336,29 +337,59 @@ impl Toolbox {
     /// Dispatch a `tools/call`. Returns `None` when the tool name is unknown so
     /// the caller can map it to a protocol-level "method not found"; `Some(Err)`
     /// carries a domain error to surface as a structured tool result.
+    ///
+    /// `grant` is the scope grant the transport resolved for this request
+    /// ([`Grant::AllScopes`] on stdio or when no authentication is configured);
+    /// requested scope keys outside the grant are rejected with `scope_denied`
+    /// before the handler runs — before any path resolution or IO.
     pub fn call(
         &self,
         name: &str,
         args: &JsonObject,
+        grant: &Grant,
     ) -> Option<Result<CallToolResult, AgentmemError>> {
-        let result = match name {
-            "list_memory_notes" => self.list_memory_notes(args),
-            "read_memory_note" => self.read_memory_note(args),
-            "read_memory_notes" => self.read_memory_notes(args),
-            "write_memory_note" => self.write_memory_note(args),
-            "edit_memory_note" => self.edit_memory_note(args),
-            "delete_memory_note" => self.delete_memory_note(args),
-            "rename_memory_note" => self.rename_memory_note(args),
-            "read_note_properties" => self.read_note_properties(args),
-            "update_note_properties" => self.update_note_properties(args),
-            "load_session_context" => self.load_session_context(args),
-            "evolve_core_persona" => self.evolve_core_persona(args),
-            "update_task_heartbeat" => self.update_task_heartbeat(args),
-            "append_diary_entry" => self.append_diary_entry(args),
-            "recall_memory_notes" if self.recall.is_some() => self.recall_memory_notes(args),
+        let handler: fn(&Toolbox, &JsonObject) -> Result<CallToolResult, AgentmemError> = match name
+        {
+            "list_memory_notes" => Toolbox::list_memory_notes,
+            "read_memory_note" => Toolbox::read_memory_note,
+            "read_memory_notes" => Toolbox::read_memory_notes,
+            "write_memory_note" => Toolbox::write_memory_note,
+            "edit_memory_note" => Toolbox::edit_memory_note,
+            "delete_memory_note" => Toolbox::delete_memory_note,
+            "rename_memory_note" => Toolbox::rename_memory_note,
+            "read_note_properties" => Toolbox::read_note_properties,
+            "update_note_properties" => Toolbox::update_note_properties,
+            "load_session_context" => Toolbox::load_session_context,
+            "evolve_core_persona" => Toolbox::evolve_core_persona,
+            "update_task_heartbeat" => Toolbox::update_task_heartbeat,
+            "append_diary_entry" => Toolbox::append_diary_entry,
+            "recall_memory_notes" if self.recall.is_some() => Toolbox::recall_memory_notes,
             _ => return None,
         };
-        Some(result)
+        if let Err(err) = self.check_grant(args, grant) {
+            return Some(Err(err));
+        }
+        Some(handler(self, args))
+    }
+
+    /// Check the scope keys present in `args` against the per-request grant.
+    /// Only well-formed keys are checked here — missing or malformed scope keys
+    /// fall through to [`Toolbox::scope_map`]'s own validation and its standard
+    /// `missing_scope`/`invalid_argument` errors.
+    fn check_grant(&self, args: &JsonObject, grant: &Grant) -> Result<(), AgentmemError> {
+        if matches!(grant, Grant::AllScopes) {
+            return Ok(());
+        }
+        let placeholders = self.scheme().placeholders();
+        let mut scope: BTreeMap<String, String> = BTreeMap::new();
+        for ph in &placeholders {
+            if let Some(Value::String(s)) = args.get(*ph)
+                && !s.is_empty()
+            {
+                scope.insert((*ph).to_string(), s.clone());
+            }
+        }
+        grant.check(&placeholders, &scope)
     }
 
     /// Notify the recall engine of the server's own write so its in-memory index
@@ -448,13 +479,17 @@ impl Toolbox {
     }
 
     /// Render the session-context for a pre-built scope map (used by the resource
-    /// and prompt surfaces). Validates that `scope` contains exactly the scheme's
-    /// placeholder keys before rendering.
+    /// and prompt surfaces and `GET /v1/context`). Validates that `scope` contains
+    /// exactly the scheme's placeholder keys, then checks it against the
+    /// per-request `grant`, before rendering — an unauthorized scope is rejected
+    /// with `scope_denied` before any file IO.
     pub fn render_session_context(
         &self,
         scope: &BTreeMap<String, String>,
+        grant: &Grant,
     ) -> Result<crate::session_context::SessionContext, AgentmemError> {
-        for ph in &self.scheme().placeholders() {
+        let placeholders = self.scheme().placeholders();
+        for ph in &placeholders {
             match scope.get(*ph) {
                 Some(v) if !v.is_empty() => {}
                 Some(_) => {
@@ -469,7 +504,6 @@ impl Toolbox {
                 }
             }
         }
-        let placeholders = self.scheme().placeholders();
         for key in scope.keys() {
             if !placeholders.contains(&key.as_str()) {
                 return Err(AgentmemError::InvalidArgument {
@@ -477,6 +511,7 @@ impl Toolbox {
                 });
             }
         }
+        grant.check(&placeholders, scope)?;
         crate::session_context::render_session_context(
             &self.storage,
             &self.session_context_template_file,

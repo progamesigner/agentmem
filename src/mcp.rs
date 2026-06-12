@@ -22,7 +22,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, model::JsonObject};
 
-use crate::config::Config;
+use crate::config::{Config, Grant};
 use crate::error::AgentmemError;
 use crate::storage::Storage;
 use crate::tools::Toolbox;
@@ -99,13 +99,15 @@ impl AgentmemServer {
         self.toolbox.scheme_placeholders()
     }
 
-    /// Render the session-context for a validated scope map. Exposed so the HTTP
-    /// `GET /v1/context` handler can reuse the same renderer as the MCP surfaces.
+    /// Render the session-context for a validated scope map, checked against the
+    /// caller's grant. Exposed so the HTTP `GET /v1/context` handler can reuse
+    /// the same renderer (and the same authorization) as the MCP surfaces.
     pub fn render_session_context(
         &self,
         scope: &BTreeMap<String, String>,
+        grant: &Grant,
     ) -> Result<crate::session_context::SessionContext, AgentmemError> {
-        self.toolbox.render_session_context(scope)
+        self.toolbox.render_session_context(scope, grant)
     }
 
     /// The `agentmem://session-context/{k1}/{k2}/…` URI template for the active
@@ -183,8 +185,30 @@ impl AgentmemServer {
 }
 
 /// Map a domain error onto a protocol error for the resource/prompt surfaces.
+/// The structured `code` rides in the `data` field so clients can branch on it.
 fn to_mcp_error(err: AgentmemError) -> McpError {
-    McpError::invalid_params(err.to_string(), None)
+    let data = Some(serde_json::json!({ "code": err.code().as_str() }));
+    McpError::invalid_params(err.to_string(), data)
+}
+
+/// The scope grant the HTTP auth middleware resolved for this request, read
+/// back out of the propagated `http::request::Parts` extension. Absent parts or
+/// grant — the stdio transport, or HTTP with no authentication configured —
+/// means every scope is permitted.
+fn request_grant(context: &RequestContext<RoleServer>) -> Grant {
+    #[cfg(feature = "transport-http")]
+    {
+        if let Some(grant) = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<Grant>())
+        {
+            return grant.clone();
+        }
+    }
+    #[cfg(not(feature = "transport-http"))]
+    let _ = context;
+    Grant::AllScopes
 }
 
 impl ServerHandler for AgentmemServer {
@@ -219,10 +243,11 @@ impl ServerHandler for AgentmemServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let args: JsonObject = request.arguments.unwrap_or_default();
-        match self.toolbox.call(&request.name, &args) {
+        let grant = request_grant(&context);
+        match self.toolbox.call(&request.name, &args, &grant) {
             Some(Ok(result)) => Ok(result),
             Some(Err(err)) => Ok(err.into_tool_result()),
             None => Err(McpError::invalid_params(
@@ -256,12 +281,12 @@ impl ServerHandler for AgentmemServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         let scope = self.scope_from_uri(&request.uri)?;
         let sc = self
             .toolbox
-            .render_session_context(&scope)
+            .render_session_context(&scope, &request_grant(&context))
             .map_err(to_mcp_error)?;
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
             sc.rendered,
@@ -296,7 +321,7 @@ impl ServerHandler for AgentmemServer {
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, McpError> {
         if request.name != SESSION_CONTEXT_NAME {
             return Err(McpError::invalid_params(
@@ -307,7 +332,7 @@ impl ServerHandler for AgentmemServer {
         let scope = self.scope_from_prompt_args(&request.arguments)?;
         let sc = self
             .toolbox
-            .render_session_context(&scope)
+            .render_session_context(&scope, &request_grant(&context))
             .map_err(to_mcp_error)?;
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(
             PromptMessageRole::User,

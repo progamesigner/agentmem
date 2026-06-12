@@ -5,9 +5,10 @@
 //! `AGENTMEM_ROOT_DIR` has a default, and invalid values fail fast with a
 //! human-readable message naming the offending variable.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
@@ -48,6 +49,7 @@ const VAR_POLICY: &str = "AGENTMEM_POLICY";
 const VAR_TRANSPORT: &str = "AGENTMEM_TRANSPORT";
 const VAR_HTTP_BIND: &str = "AGENTMEM_HTTP_BIND";
 const VAR_HTTP_BEARER: &str = "AGENTMEM_HTTP_BEARER";
+const VAR_HTTP_TOKENS_FILE: &str = "AGENTMEM_HTTP_TOKENS_FILE";
 const VAR_HTTP_ALLOWED_HOSTS: &str = "AGENTMEM_HTTP_ALLOWED_HOSTS";
 const VAR_TIMEZONE: &str = "AGENTMEM_TIMEZONE";
 const VAR_HONOR_IGNORE: &str = "AGENTMEM_HONOR_IGNORE_FILES";
@@ -61,12 +63,15 @@ const VAR_RECALL_MAX_RESIDENT_SCOPES: &str = "AGENTMEM_RECALL_MAX_RESIDENT_SCOPE
 const VAR_RECALL_FRESHNESS_MS: &str = "AGENTMEM_RECALL_FRESHNESS_MS";
 
 /// The selected transport and its parameters.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Transport {
     Stdio,
     Http {
         bind: SocketAddr,
         bearer: Option<String>,
+        /// Per-token scope grants parsed from `AGENTMEM_HTTP_TOKENS_FILE`;
+        /// `None` when the variable is unset.
+        tokens: Option<TokenGrants>,
         /// `Host`-header allow-list for the Streamable HTTP transport. Empty
         /// means "use rmcp's loopback-only default"; the sole entry `*` disables
         /// `Host` validation entirely.
@@ -74,15 +79,224 @@ pub enum Transport {
     },
 }
 
+/// `Debug` is hand-written so the bearer secret never appears in debug output
+/// (the token values inside [`TokenGrants`] are redacted by its own `Debug`).
+impl std::fmt::Debug for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Transport::Stdio => f.write_str("Stdio"),
+            Transport::Http {
+                bind,
+                bearer,
+                tokens,
+                allowed_hosts,
+            } => f
+                .debug_struct("Http")
+                .field("bind", bind)
+                .field("bearer", &bearer.as_ref().map(|_| "<redacted>"))
+                .field("tokens", tokens)
+                .field("allowed_hosts", allowed_hosts)
+                .finish(),
+        }
+    }
+}
+
 impl Transport {
-    /// `true` when bound on a non-loopback interface without a bearer token —
-    /// the condition that warrants a startup warning.
+    /// `true` when bound on a non-loopback interface with no authentication at
+    /// all (neither the static bearer nor a tokens file) — the condition that
+    /// warrants a startup warning.
     pub fn is_unauthenticated_non_loopback(&self) -> bool {
         match self {
-            Transport::Http { bind, bearer, .. } => bearer.is_none() && !bind.ip().is_loopback(),
+            Transport::Http {
+                bind,
+                bearer,
+                tokens,
+                ..
+            } => bearer.is_none() && tokens.is_none() && !bind.ip().is_loopback(),
             Transport::Stdio => false,
         }
     }
+}
+
+/// A per-key scope matcher from the tokens file: an exact value or the total
+/// wildcard `*`. Partial patterns are rejected at startup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeMatcher {
+    /// `"*"` — any value for this key.
+    Any,
+    /// An exact string match.
+    Exact(String),
+}
+
+impl ScopeMatcher {
+    /// `true` when the requested scope value is covered by this matcher.
+    pub fn matches(&self, value: &str) -> bool {
+        match self {
+            ScopeMatcher::Any => true,
+            ScopeMatcher::Exact(expected) => expected == value,
+        }
+    }
+}
+
+/// One grant entry: a complete matcher map over the active scheme's
+/// placeholders (validated exhaustive at startup).
+pub type GrantEntry = BTreeMap<String, ScopeMatcher>;
+
+/// The scope grant resolved for a request: which scope keys its bearer may
+/// name. Resolved by the HTTP auth middleware and carried with the request as
+/// an extension; surfaces with no grant context (the stdio transport, or HTTP
+/// with no authentication configured) use [`Grant::AllScopes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Grant {
+    /// Every scope is permitted (the static bearer, stdio, or no auth).
+    AllScopes,
+    /// The union of a token's grant entries: a requested scope is permitted
+    /// when at least one entry matches every requested key.
+    Entries(Arc<Vec<GrantEntry>>),
+}
+
+impl Grant {
+    /// Check requested scope values against this grant. `order` is the scheme's
+    /// placeholder order; on mismatch the error names the first key (in that
+    /// order) at which no grant entry remains viable, and never the grant set.
+    /// Keys absent from `scope` are unconstrained here — surface validation
+    /// reports those as `missing_scope` itself.
+    pub fn check(
+        &self,
+        order: &[&str],
+        scope: &BTreeMap<String, String>,
+    ) -> Result<(), AgentmemError> {
+        let entries = match self {
+            Grant::AllScopes => return Ok(()),
+            Grant::Entries(entries) => entries,
+        };
+        let mut alive: Vec<&GrantEntry> = entries.iter().collect();
+        for key in order {
+            let Some(value) = scope.get(*key) else {
+                continue;
+            };
+            alive.retain(|entry| entry.get(*key).is_some_and(|m| m.matches(value)));
+            if alive.is_empty() {
+                return Err(AgentmemError::ScopeDenied {
+                    key: (*key).to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The token → grant table parsed from `AGENTMEM_HTTP_TOKENS_FILE`. Holds the
+/// raw token values, so its `Debug` prints only the table size.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TokenGrants {
+    /// Token value → the union of that token's grant entries.
+    map: HashMap<String, Arc<Vec<GrantEntry>>>,
+}
+
+impl std::fmt::Debug for TokenGrants {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TokenGrants({} token(s))", self.map.len())
+    }
+}
+
+impl TokenGrants {
+    /// Parse and validate the tokens-file JSON against the active scheme.
+    /// Error messages name the offending key or pattern but never echo a token.
+    fn parse(text: &str, scheme: &Scheme) -> Result<TokenGrants, AgentmemError> {
+        #[derive(serde::Deserialize)]
+        struct File {
+            tokens: Vec<Entry>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            token: String,
+            scopes: BTreeMap<String, String>,
+        }
+
+        // The serde error is reduced to its location: its message can echo
+        // unexpected literal values, which must never happen to a token.
+        let file: File = serde_json::from_str(text).map_err(|e| {
+            config_err(format!(
+                "{VAR_HTTP_TOKENS_FILE} is not valid tokens-file JSON \
+                 (expected {{ \"tokens\": [ {{ \"token\": …, \"scopes\": {{…}} }} ] }}; \
+                 error near line {}, column {})",
+                e.line(),
+                e.column()
+            ))
+        })?;
+
+        let placeholders = scheme.placeholders();
+        let mut map: HashMap<String, Vec<GrantEntry>> = HashMap::new();
+        for (index, entry) in file.tokens.iter().enumerate() {
+            let n = index + 1;
+            if entry.token.is_empty() {
+                return Err(config_err(format!(
+                    "{VAR_HTTP_TOKENS_FILE} entry {n} has an empty token"
+                )));
+            }
+            for key in entry.scopes.keys() {
+                if !placeholders.contains(&key.as_str()) {
+                    return Err(config_err(format!(
+                        "{VAR_HTTP_TOKENS_FILE} entry {n} grants unknown scope key '{key}' \
+                         (not a placeholder of the active scheme)"
+                    )));
+                }
+            }
+            let mut grant_entry = GrantEntry::new();
+            for ph in &placeholders {
+                let Some(value) = entry.scopes.get(*ph) else {
+                    return Err(config_err(format!(
+                        "{VAR_HTTP_TOKENS_FILE} entry {n} omits scope key '{ph}'"
+                    )));
+                };
+                let matcher = if value == "*" {
+                    ScopeMatcher::Any
+                } else if value.contains('*') {
+                    return Err(config_err(format!(
+                        "{VAR_HTTP_TOKENS_FILE} entry {n} scope key '{ph}' uses partial \
+                         pattern {value:?}; values must be an exact string or \"*\""
+                    )));
+                } else {
+                    ScopeMatcher::Exact(value.clone())
+                };
+                grant_entry.insert((*ph).to_string(), matcher);
+            }
+            map.entry(entry.token.clone())
+                .or_default()
+                .push(grant_entry);
+        }
+        Ok(TokenGrants {
+            map: map.into_iter().map(|(k, v)| (k, Arc::new(v))).collect(),
+        })
+    }
+
+    /// The grant for a presented token, when it is configured.
+    pub fn grant_for(&self, token: &str) -> Option<Grant> {
+        self.map
+            .get(token)
+            .map(|entries| Grant::Entries(entries.clone()))
+    }
+
+    /// Number of distinct configured tokens (for redacted display).
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+/// Load and validate the `AGENTMEM_HTTP_TOKENS_FILE` grant file.
+fn load_tokens_file(path: &str, scheme: &Scheme) -> Result<TokenGrants, AgentmemError> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        config_err(format!(
+            "{VAR_HTTP_TOKENS_FILE} could not be read ({path}): {kind}",
+            kind = e.kind()
+        ))
+    })?;
+    TokenGrants::parse(&text, scheme)
 }
 
 /// The requested recall search backend.
@@ -196,6 +410,10 @@ pub struct Cli {
     /// HTTP bearer token (overrides AGENTMEM_HTTP_BEARER).
     #[arg(long)]
     pub http_bearer: Option<String>,
+    /// JSON file mapping bearer tokens to scope grants for the HTTP transport
+    /// (overrides AGENTMEM_HTTP_TOKENS_FILE).
+    #[arg(long)]
+    pub http_tokens_file: Option<PathBuf>,
     /// Comma-separated `Host` allow-list for the HTTP transport; `*` disables
     /// validation (overrides AGENTMEM_HTTP_ALLOWED_HOSTS).
     #[arg(long)]
@@ -254,6 +472,9 @@ impl Cli {
         }
         if let Some(v) = &self.http_bearer {
             m.insert(VAR_HTTP_BEARER, v.clone());
+        }
+        if let Some(v) = &self.http_tokens_file {
+            m.insert(VAR_HTTP_TOKENS_FILE, v.to_string_lossy().into_owned());
         }
         if let Some(v) = &self.http_allowed_hosts {
             m.insert(VAR_HTTP_ALLOWED_HOSTS, v.clone());
@@ -353,7 +574,7 @@ impl Config {
         })?;
 
         // --- transport ---
-        let transport = parse_transport(get)?;
+        let transport = parse_transport(get, &scheme)?;
 
         // --- timezone ---
         let tz_raw = get(VAR_TIMEZONE).unwrap_or_else(|| "UTC".to_string());
@@ -419,12 +640,18 @@ impl Config {
             Transport::Http {
                 bind,
                 bearer,
+                tokens,
                 allowed_hosts,
             } => {
                 let hosts = describe_allowed_hosts(allowed_hosts);
                 format!(
-                    "http bind={bind} bearer={} allowed_hosts={hosts}",
-                    if bearer.is_some() { "set" } else { "unset" }
+                    "http bind={bind} bearer={} tokens={} allowed_hosts={hosts}",
+                    if bearer.is_some() { "set" } else { "unset" },
+                    // Token values are secrets; only the count is shown.
+                    match tokens {
+                        Some(t) => format!("{} token(s)", t.len()),
+                        None => "unset".to_string(),
+                    }
                 )
             }
         };
@@ -500,7 +727,10 @@ fn parse_agents_dir(raw: &str) -> Result<Utf8PathBuf, AgentmemError> {
     Ok(path)
 }
 
-fn parse_transport(get: &dyn Fn(&str) -> Option<String>) -> Result<Transport, AgentmemError> {
+fn parse_transport(
+    get: &dyn Fn(&str) -> Option<String>,
+    scheme: &Scheme,
+) -> Result<Transport, AgentmemError> {
     let kind = get(VAR_TRANSPORT).unwrap_or_else(|| "http".to_string());
     match kind.as_str() {
         "stdio" => Ok(Transport::Stdio),
@@ -514,6 +744,10 @@ fn parse_transport(get: &dyn Fn(&str) -> Option<String>) -> Result<Transport, Ag
                 ))
             })?;
             let bearer = get(VAR_HTTP_BEARER).filter(|s| !s.is_empty());
+            let tokens = match get(VAR_HTTP_TOKENS_FILE).filter(|s| !s.is_empty()) {
+                Some(path) => Some(load_tokens_file(&path, scheme)?),
+                None => None,
+            };
             // Comma-separated `Host` allow-list; trim and drop empties. An empty
             // result leaves rmcp's loopback-only default in place; a sole `*`
             // disables `Host` validation.
@@ -526,6 +760,7 @@ fn parse_transport(get: &dyn Fn(&str) -> Option<String>) -> Result<Transport, Ag
             Ok(Transport::Http {
                 bind,
                 bearer,
+                tokens,
                 allowed_hosts,
             })
         }
@@ -672,6 +907,7 @@ mod tests {
             Transport::Http {
                 bind: default_http_bind(),
                 bearer: None,
+                tokens: None,
                 allowed_hosts: vec![],
             }
         );
@@ -974,6 +1210,254 @@ mod tests {
             }
             _ => panic!("expected http"),
         }
+    }
+
+    // --- AGENTMEM_HTTP_TOKENS_FILE ---------------------------------------
+
+    /// Write a tokens file next to the vault and return its path.
+    fn write_tokens(tmp: &TempDir, json: &str) -> String {
+        let path = tmp.path().join("tokens.json");
+        std::fs::write(&path, json).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn http_tokens(cfg: &Config) -> &TokenGrants {
+        match &cfg.transport {
+            Transport::Http {
+                tokens: Some(t), ..
+            } => t,
+            other => panic!("expected http transport with tokens, got {other:?}"),
+        }
+    }
+
+    fn scope(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn tokens_file_parses_exact_and_wildcard_grants() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "t1", "scopes": { "agent": "jarvis", "user": "*" } } ] }"#,
+        );
+        let cfg = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap();
+        let grants = http_tokens(&cfg);
+        assert_eq!(grants.len(), 1);
+
+        let grant = grants.grant_for("t1").unwrap();
+        let order = ["agent", "user"];
+        // Own scope, any user value.
+        assert!(
+            grant
+                .check(&order, &scope(&[("agent", "jarvis"), ("user", "tony")]))
+                .is_ok()
+        );
+        assert!(
+            grant
+                .check(&order, &scope(&[("agent", "jarvis"), ("user", "pepper")]))
+                .is_ok()
+        );
+        // Foreign agent → denied naming the key.
+        let err = grant
+            .check(&order, &scope(&[("agent", "friday"), ("user", "tony")]))
+            .unwrap_err();
+        assert_eq!(err.code().as_str(), "scope_denied");
+        assert!(err.to_string().contains("'agent'"));
+        // A key absent from the request is unconstrained here (missing_scope is
+        // surface validation's job).
+        assert!(grant.check(&order, &scope(&[("user", "tony")])).is_ok());
+        // Unknown bearer resolves to no grant.
+        assert!(grants.grant_for("t9").is_none());
+    }
+
+    #[test]
+    fn tokens_file_duplicate_tokens_union_entrywise() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [
+                { "token": "t2", "scopes": { "agent": "jarvis", "user": "tony" } },
+                { "token": "t2", "scopes": { "agent": "friday", "user": "tony" } }
+            ] }"#,
+        );
+        let cfg = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap();
+        let grants = http_tokens(&cfg);
+        assert_eq!(grants.len(), 1, "duplicate tokens collapse into one grant");
+
+        let grant = grants.grant_for("t2").unwrap();
+        let order = ["agent", "user"];
+        // Either granted combination works …
+        assert!(
+            grant
+                .check(&order, &scope(&[("agent", "jarvis"), ("user", "tony")]))
+                .is_ok()
+        );
+        assert!(
+            grant
+                .check(&order, &scope(&[("agent", "friday"), ("user", "tony")]))
+                .is_ok()
+        );
+        // … but the union is entry-wise, not per-key: no other combination.
+        let err = grant
+            .check(&order, &scope(&[("agent", "jarvis"), ("user", "pepper")]))
+            .unwrap_err();
+        assert!(err.to_string().contains("'user'"));
+    }
+
+    #[test]
+    fn tokens_file_missing_or_invalid_fails_without_echoing_tokens() {
+        let tmp = TempDir::new().unwrap();
+
+        // Unreadable file.
+        let err = build(with_root(
+            &tmp,
+            &[(VAR_HTTP_TOKENS_FILE, "/nonexistent/tokens.json")],
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains(VAR_HTTP_TOKENS_FILE));
+
+        // Invalid JSON shape: the secret string in the file must not be echoed.
+        let path = write_tokens(&tmp, r#"{ "tokens": [ "sup3r-secret" ] }"#);
+        let err = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains(VAR_HTTP_TOKENS_FILE));
+        assert!(!msg.contains("sup3r-secret"), "token echoed in: {msg}");
+
+        // Empty token value.
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "", "scopes": { "agent": "a", "user": "b" } } ] }"#,
+        );
+        let err = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap_err();
+        assert!(err.to_string().contains("empty token"));
+    }
+
+    #[test]
+    fn tokens_file_scope_keys_validated_against_scheme() {
+        let tmp = TempDir::new().unwrap();
+
+        // A key that is not a scheme placeholder.
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "sup3r-secret",
+                 "scopes": { "tenant": "x", "agent": "a", "user": "b" } } ] }"#,
+        );
+        let err = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'tenant'"));
+        assert!(!msg.contains("sup3r-secret"), "token echoed in: {msg}");
+
+        // A placeholder omitted from the entry.
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "t", "scopes": { "agent": "a" } } ] }"#,
+        );
+        let err = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap_err();
+        assert!(err.to_string().contains("omits scope key 'user'"));
+
+        // A partial wildcard pattern.
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "t", "scopes": { "agent": "a", "user": "t*" } } ] }"#,
+        );
+        let err = build(with_root(&tmp, &[(VAR_HTTP_TOKENS_FILE, &path)])).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("partial") && msg.contains("t*"), "got: {msg}");
+    }
+
+    #[test]
+    fn tokens_redacted_in_describe_and_debug() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "sup3r-secret", "scopes": { "agent": "jarvis", "user": "*" } } ] }"#,
+        );
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_HTTP_TOKENS_FILE, &path),
+                (VAR_HTTP_BEARER, "h4rd-secret"),
+            ],
+        ))
+        .unwrap();
+
+        let described = cfg.describe();
+        assert!(described.contains("tokens=1 token(s)"));
+        assert!(!described.contains("sup3r-secret"));
+        assert!(!described.contains("h4rd-secret"));
+
+        let debugged = format!("{cfg:?}");
+        assert!(!debugged.contains("sup3r-secret"));
+        assert!(!debugged.contains("h4rd-secret"));
+        assert!(debugged.contains("TokenGrants(1 token(s))"));
+    }
+
+    #[test]
+    fn tokens_unset_described_as_unset() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = build(with_root(&tmp, &[])).unwrap();
+        assert!(cfg.describe().contains("tokens=unset"));
+    }
+
+    #[test]
+    fn stdio_ignores_tokens_file() {
+        let tmp = TempDir::new().unwrap();
+        // The path does not exist: under stdio the variable must not even be read.
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_TRANSPORT, "stdio"),
+                (VAR_HTTP_TOKENS_FILE, "/nonexistent/tokens.json"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(cfg.transport, Transport::Stdio);
+    }
+
+    #[test]
+    fn tokens_file_counts_as_authentication_for_the_startup_warning() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "t", "scopes": { "agent": "a", "user": "*" } } ] }"#,
+        );
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_HTTP_BIND, "0.0.0.0:8000"),
+                (VAR_HTTP_TOKENS_FILE, &path),
+            ],
+        ))
+        .unwrap();
+        assert!(!cfg.transport.is_unauthenticated_non_loopback());
+    }
+
+    #[test]
+    fn cli_overrides_env_for_tokens_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_tokens(
+            &tmp,
+            r#"{ "tokens": [ { "token": "t", "scopes": { "agent": "a", "user": "*" } } ] }"#,
+        );
+        let cli = Cli {
+            root_dir: Some(tmp.path().to_path_buf()),
+            http_tokens_file: Some(PathBuf::from(&path)),
+            ..Default::default()
+        };
+        let overrides = cli.as_overrides();
+        let env: HashMap<String, String> = [(
+            VAR_HTTP_TOKENS_FILE.to_string(),
+            "/nonexistent/from-env.json".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let cfg =
+            Config::build(&|k| overrides.get(k).cloned().or_else(|| env.get(k).cloned())).unwrap();
+        assert_eq!(http_tokens(&cfg).len(), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agentmem::AgentmemError;
-use agentmem::config::{RecallBackendKind, RecallConfig};
+use agentmem::config::{Grant, RecallBackendKind, RecallConfig};
 use agentmem::path::PathResolver;
 use agentmem::policy::Policy;
 use agentmem::recall::RecallEngine;
@@ -113,7 +113,8 @@ fn default_tb(tmp: &TempDir) -> Toolbox {
 
 fn call(tb: &Toolbox, name: &str, args: Value) -> Result<CallToolResult, AgentmemError> {
     let obj = args.as_object().expect("args must be an object").clone();
-    tb.call(name, &obj).expect("tool name must be known")
+    tb.call(name, &obj, &Grant::AllScopes)
+        .expect("tool name must be known")
 }
 
 /// Assert the call failed with the given error code.

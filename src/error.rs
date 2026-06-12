@@ -20,6 +20,7 @@ pub enum ErrorCode {
     PathNotPermitted,
     WriteDenied,
     MissingScope,
+    ScopeDenied,
     NotFound,
     DestinationExists,
     EditSearchNotFound,
@@ -38,6 +39,7 @@ impl ErrorCode {
             ErrorCode::PathNotPermitted => "path_not_permitted",
             ErrorCode::WriteDenied => "write_denied",
             ErrorCode::MissingScope => "missing_scope",
+            ErrorCode::ScopeDenied => "scope_denied",
             ErrorCode::NotFound => "not_found",
             ErrorCode::DestinationExists => "destination_exists",
             ErrorCode::EditSearchNotFound => "edit_search_not_found",
@@ -88,6 +90,13 @@ pub enum AgentmemError {
     #[error("missing required scope key '{key}'")]
     MissingScope { key: String },
 
+    /// The presented token's grant does not cover a requested scope key. The
+    /// message names the key but never enumerates the valid grants.
+    #[error(
+        "scope denied: this token's grant does not cover the requested value of scope key '{key}'"
+    )]
+    ScopeDenied { key: String },
+
     #[error("not found: '{virtual_path}'")]
     NotFound { virtual_path: String },
 
@@ -137,6 +146,7 @@ impl AgentmemError {
             AgentmemError::WriteDenied { .. } => ErrorCode::WriteDenied,
             AgentmemError::CrossScopeLink { .. } => ErrorCode::WriteDenied,
             AgentmemError::MissingScope { .. } => ErrorCode::MissingScope,
+            AgentmemError::ScopeDenied { .. } => ErrorCode::ScopeDenied,
             AgentmemError::NotFound { .. } => ErrorCode::NotFound,
             AgentmemError::DestinationExists { .. } => ErrorCode::DestinationExists,
             AgentmemError::EditSearchNotFound => ErrorCode::EditSearchNotFound,
@@ -183,6 +193,7 @@ impl From<AgentmemError> for McpError {
         let data = Some(json!({ "code": code.as_str() }));
         match code {
             ErrorCode::MissingScope
+            | ErrorCode::ScopeDenied
             | ErrorCode::InvalidArgument
             | ErrorCode::Unsupported
             | ErrorCode::DestinationExists
@@ -208,6 +219,7 @@ mod tests {
         assert_eq!(ErrorCode::PathNotPermitted.as_str(), "path_not_permitted");
         assert_eq!(ErrorCode::WriteDenied.as_str(), "write_denied");
         assert_eq!(ErrorCode::MissingScope.as_str(), "missing_scope");
+        assert_eq!(ErrorCode::ScopeDenied.as_str(), "scope_denied");
         assert_eq!(ErrorCode::NotFound.as_str(), "not_found");
         assert_eq!(ErrorCode::DestinationExists.as_str(), "destination_exists");
         assert_eq!(
@@ -260,6 +272,23 @@ mod tests {
                 .unwrap()
                 .contains("PERSONA.md")
         );
+    }
+
+    /// `scope_denied` names the offending key in both the message and the
+    /// structured code, and never enumerates the grant set.
+    #[test]
+    fn scope_denied_names_key_only() {
+        let err = AgentmemError::ScopeDenied {
+            key: "agent".to_string(),
+        };
+        assert_eq!(err.code().as_str(), "scope_denied");
+        assert!(err.to_string().contains("'agent'"));
+
+        let result = err.into_tool_result();
+        assert_eq!(result.is_error, Some(true));
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["code"], "scope_denied");
+        assert!(structured["message"].as_str().unwrap().contains("'agent'"));
     }
 
     /// The virtual path supplied by the client appears in the message; the

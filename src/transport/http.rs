@@ -3,9 +3,12 @@
 //! Mounts the `rmcp` Streamable HTTP service at `POST`/`GET`/`DELETE /mcp` and a
 //! plain `GET /v1/context` read endpoint behind an `axum` router that also serves
 //! the Kubernetes-style `GET /healthz` (liveness) and `GET /readyz` (readiness)
-//! probes. When `AGENTMEM_HTTP_BEARER` is set, an `axum` middleware enforces a
-//! matching `Authorization: Bearer <token>` header on the `/mcp` and `/v1/context`
-//! routes and returns HTTP 401 otherwise; the probe routes are always reachable.
+//! probes. When `AGENTMEM_HTTP_BEARER` and/or `AGENTMEM_HTTP_TOKENS_FILE` is
+//! configured, an `axum` middleware resolves the presented `Authorization:
+//! Bearer <token>` header to a scope [`Grant`] — all scopes for the static
+//! bearer, the configured grant for a scoped token — attaches it to the request,
+//! and returns HTTP 401 for anything else; the probe routes are always
+//! reachable. The token string itself never travels past the middleware.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -13,7 +16,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Query, Request, State};
+use axum::extract::{Extension, Query, Request, State};
 use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
@@ -22,6 +25,7 @@ use axum::routing::get;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
+use crate::config::{Grant, TokenGrants};
 use crate::error::AgentmemError;
 use crate::mcp::AgentmemServer;
 
@@ -33,16 +37,21 @@ use crate::mcp::AgentmemServer;
 pub async fn serve(
     bind: SocketAddr,
     bearer: Option<String>,
+    tokens: Option<TokenGrants>,
     allowed_hosts: Vec<String>,
     server: AgentmemServer,
 ) -> anyhow::Result<()> {
-    if bearer.is_none() {
-        tracing::warn!("AGENTMEM_HTTP_BEARER is unset; the HTTP endpoint is unauthenticated");
+    if bearer.is_none() && tokens.is_none() {
+        tracing::warn!(
+            "AGENTMEM_HTTP_BEARER and AGENTMEM_HTTP_TOKENS_FILE are unset; \
+             the HTTP endpoint is unauthenticated"
+        );
         if !bind.ip().is_loopback() {
             tracing::warn!(
                 %bind,
-                "binding a non-loopback interface without AGENTMEM_HTTP_BEARER; \
-                 the endpoint is reachable off-host without authentication"
+                "binding a non-loopback interface without AGENTMEM_HTTP_BEARER or \
+                 AGENTMEM_HTTP_TOKENS_FILE; the endpoint is reachable off-host \
+                 without authentication"
             );
         }
     }
@@ -85,8 +94,12 @@ pub async fn serve(
         .route_service("/mcp", mcp_service)
         .route("/v1/context", get(context))
         .with_state(server);
-    if let Some(token) = bearer {
-        gated = gated.layer(from_fn_with_state(Arc::new(token), require_bearer));
+    if bearer.is_some() || tokens.is_some() {
+        let auth = Arc::new(HttpAuth {
+            static_bearer: bearer,
+            tokens,
+        });
+        gated = gated.layer(from_fn_with_state(auth, require_bearer));
     }
 
     let app = probes.merge(gated);
@@ -125,9 +138,13 @@ async fn readyz(State(server): State<AgentmemServer>) -> Response {
 /// when the `Accept` header prefers `application/json`.
 async fn context(
     State(server): State<AgentmemServer>,
+    grant: Option<Extension<Grant>>,
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
+    // The grant the auth middleware resolved for this request; absent (no
+    // authentication configured) means every scope.
+    let grant = grant.map(|Extension(g)| g).unwrap_or(Grant::AllScopes);
     let placeholders = server.scheme_placeholders();
 
     // Reject any query parameter that is not a scheme placeholder.
@@ -150,7 +167,7 @@ async fn context(
         }
     }
 
-    match server.render_session_context(&scope) {
+    match server.render_session_context(&scope, &grant) {
         Ok(sc) => {
             if prefers_json(&headers) {
                 Json(serde_json::json!({
@@ -171,6 +188,8 @@ async fn context(
                 AgentmemError::MissingScope { .. } | AgentmemError::InvalidArgument { .. } => {
                     StatusCode::BAD_REQUEST
                 }
+                // The bound scope is outside the presented token's grant.
+                AgentmemError::ScopeDenied { .. } => StatusCode::FORBIDDEN,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             error(status, err.to_string())
@@ -191,10 +210,21 @@ fn error(status: StatusCode, message: String) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
-/// Reject requests whose bearer token does not match the configured secret.
+/// The authentication configuration for the gated routes: the optional static
+/// bearer (which carries the all-scopes grant) plus the optional per-token
+/// grant table from `AGENTMEM_HTTP_TOKENS_FILE`.
+struct HttpAuth {
+    static_bearer: Option<String>,
+    tokens: Option<TokenGrants>,
+}
+
+/// Resolve the presented bearer to a [`Grant`] and attach it to the request as
+/// an extension (rmcp propagates request parts into the MCP request context;
+/// the `/v1/context` handler reads it directly). Unknown or missing bearers are
+/// rejected with 401. The token string is dropped here and never logged.
 async fn require_bearer(
-    State(expected): State<Arc<String>>,
-    request: Request,
+    State(auth): State<Arc<HttpAuth>>,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let presented = request
@@ -203,10 +233,20 @@ async fn require_bearer(
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
 
-    if presented == Some(expected.as_str()) {
-        next.run(request).await
-    } else {
-        (
+    let grant = presented.and_then(|token| {
+        if auth.static_bearer.as_deref() == Some(token) {
+            Some(Grant::AllScopes)
+        } else {
+            auth.tokens.as_ref().and_then(|t| t.grant_for(token))
+        }
+    });
+
+    match grant {
+        Some(grant) => {
+            request.extensions_mut().insert(grant);
+            next.run(request).await
+        }
+        None => (
             StatusCode::UNAUTHORIZED,
             axum::Json(serde_json::json!({
                 "jsonrpc": "2.0",
@@ -214,6 +254,6 @@ async fn require_bearer(
                 "id": null
             })),
         )
-            .into_response()
+            .into_response(),
     }
 }

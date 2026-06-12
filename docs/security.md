@@ -5,34 +5,69 @@ guarantee in v1, and how to widen or narrow its visibility.
 
 ## Threat model at a glance
 
-| Concern | v1 stance |
+| Concern | Stance |
 |---|---|
-| Claimed scope keys (`agent`, `user`, …) | **Trusted.** Any client reachable through the configured transport may address any scope. Per-tenant authentication is deferred. |
+| Claimed scope keys (`agent`, `user`, …) | **Bound to the bearer when `AGENTMEM_HTTP_TOKENS_FILE` is set** (HTTP transport): each token may only name the scopes its grant covers. Without a tokens file, scope keys are trusted claims, as in v1. |
 | Path traversal (`..`, absolute paths, symlink escape) | **Prevented.** Structurally impossible to escape the vault root. |
 | Cross-scope access inside the agents folder | **Structurally impossible.** The resolver always appends the caller's own scope. |
 | Cross-scope leakage via `[[wikilinks]]` in shared notes | **Prevented.** A shared note linking to the caller's own scoped note is refused with `write_denied`; only the owning scope's suffix is ever persisted, and only in files that scope alone can read. |
 | Writes into human-owned regions | **Governed by policy.** Denied unless the active policy permits it. |
-| HTTP endpoint exposure | **Optional static bearer token.** Loopback-only by default. |
+| HTTP endpoint exposure | **Optional static bearer token and/or per-tenant scoped tokens.** Loopback-only by default. |
 
-## Claimed scope is trusted (v1)
+## Scope keys: trusted by default, bound to the bearer with scoped tokens
 
-Scope keys are supplied **per tool call**, not bound to an authenticated identity.
-A single server process can therefore serve many agents concurrently with no
-session handshake — but it also means a misbehaving or malicious client could
-present another agent's scope keys and read or write that scope's files.
+Scope keys are supplied **per tool call**, not per session. By default they are
+trusted claims: a single server process serves many agents concurrently with no
+session handshake, and any client that clears the endpoint gate may name any
+scope. That is fine for a loopback sidecar whose clients are all launched by the
+same operator — and dishonest for a shared server reachable over the network.
 
-This is an intentional v1 simplification. The architecture keeps the boundary
-clean so that adding authentication later is purely additive: a middleware that
-validates the claimed scope keys against an authenticated identity (OAuth claims,
-mTLS subject, or per-tenant tokens) and rejects mismatches at the tool boundary.
+For the shared deployment, the HTTP transport supports **per-tenant scoped
+tokens** via `AGENTMEM_HTTP_TOKENS_FILE`, a JSON file mapping bearer tokens to
+scope grants:
 
-The HTTP transport's `AGENTMEM_HTTP_BEARER` protects the **endpoint**, not
-individual tenants — it is a coarse gate, not per-scope authorization.
+```json
+{
+  "tokens": [
+    { "token": "jarvis-secret", "scopes": { "agent": "jarvis", "user": "*" } },
+    { "token": "ops-secret",    "scopes": { "agent": "friday", "user": "tony" } }
+  ]
+}
+```
 
-> **Operational guidance:** until per-tenant auth lands, only expose `agentmem` to
-> clients you trust to honestly declare their own scope. For shared or remote
-> deployments, set `AGENTMEM_HTTP_BEARER` and bind a non-loopback interface only
-> behind a trusted network boundary.
+- Grant keys MUST be exactly the active scheme's placeholders; each value is an
+  exact string or the total wildcard `*` (partial patterns like `"t*"` are
+  rejected at startup). A token listed in several entries gets the union of its
+  entries — a request is permitted when at least one entry matches every key.
+- **Authentication** happens in the transport middleware: when the tokens file
+  is configured, every request to `/mcp` and `/v1/context` must present either a
+  configured scoped token or the static `AGENTMEM_HTTP_BEARER` (which keeps its
+  semantics as the operator token and carries the all-scopes grant); anything
+  else is `401`. The probe routes stay open.
+- **Authorization** happens at scope validation, where every scoped surface
+  already funnels: a `tools/call`, the `session-context` resource and prompt,
+  and `GET /v1/context` each check the requested scope keys against the
+  presenting token's grant. A mismatch is the `scope_denied` domain error
+  (HTTP `403` on `/v1/context`), rejected **before any path resolution or IO**.
+  The message names the offending key and never enumerates valid grants.
+- The file is read once at startup; an unreadable or invalid file is a startup
+  error, not a silently open server, and token values never appear in logs or
+  `--print-config` output. **Rotation requires a restart** — grants are
+  resolved per request from the startup table, so a token dropped from the file
+  stops authorizing on the next restart, even on already-open sessions.
+- Standard secret-mount practice applies: keep the file readable only by the
+  server's user (e.g. a Kubernetes `Secret` volume).
+
+Without a tokens file, `AGENTMEM_HTTP_BEARER` alone still protects only the
+**endpoint**, not individual tenants — a coarse gate, not per-scope
+authorization. The stdio transport is unchanged either way: the launching
+process owns the vault, so process-level trust applies by design.
+
+> **Operational guidance:** for shared or remote deployments, configure
+> `AGENTMEM_HTTP_TOKENS_FILE` so every client is confined to its own scopes, and
+> reserve `AGENTMEM_HTTP_BEARER` for operator tooling. Expose an
+> unauthenticated or static-bearer-only server just to clients you trust to
+> honestly declare their own scope.
 
 The HTTP transport also enforces **DNS-rebinding protection** on the inbound
 `Host` header. By default only loopback hosts (`localhost`, `127.0.0.1`, `::1`)
@@ -152,5 +187,5 @@ IO failures carry only an error kind and a static context label.
 
 ## Deferred to follow-up changes
 
-- **Per-tenant authentication** binding scope keys to authenticated identities.
+- **Hot reload of the tokens file** (rotation currently requires a restart).
 - **CORS / auth presets** for non-loopback HTTP deployments.

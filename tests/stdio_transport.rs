@@ -74,3 +74,45 @@ async fn stdio_initialize_list_and_roundtrip() {
     // Clean shutdown.
     service.cancel().await.unwrap();
 }
+
+/// `AGENTMEM_HTTP_TOKENS_FILE` is an HTTP-transport variable: under stdio it is
+/// ignored entirely — the file is not even read (the path here does not exist)
+/// and no grant enforcement applies, so every scope stays usable.
+#[tokio::test]
+async fn stdio_ignores_tokens_file_and_enforces_no_grants() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bin = env!("CARGO_BIN_EXE_agentmem");
+
+    let service = ()
+        .serve(
+            TokioChildProcess::new(Command::new(bin).configure(|cmd| {
+                cmd.env("AGENTMEM_ROOT_DIR", tmp.path());
+                cmd.env("AGENTMEM_TRANSPORT", "stdio");
+                cmd.env("AGENTMEM_HTTP_TOKENS_FILE", "/nonexistent/tokens.json");
+            }))
+            .unwrap(),
+        )
+        .await
+        .expect("server should start despite the unreadable tokens file");
+
+    // Two different scopes round-trip freely: no grant gate on stdio.
+    for (agent, user) in [("jarvis", "tony"), ("friday", "pepper")] {
+        let write = service
+            .call_tool(
+                CallToolRequestParams::new("write_memory_note").with_arguments(
+                    json!({
+                        "agent": agent, "user": user,
+                        "path": "Agents/topics/note.md", "content": "any scope"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(write.is_error, Some(true), "{agent}/{user} must be usable");
+    }
+
+    service.cancel().await.unwrap();
+}

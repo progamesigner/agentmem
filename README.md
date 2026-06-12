@@ -68,6 +68,20 @@ Set `AGENTMEM_HTTP_BEARER` for any deployment reachable off-host — the endpoin
 is otherwise unauthenticated (a startup `WARN` is logged). Override any
 [configuration variable](#configuration) with `-e`.
 
+**Per-tenant scoped tokens.** When one server is shared by several agents, mount
+a tokens file and set `AGENTMEM_HTTP_TOKENS_FILE` so each client's bearer is
+confined to its own scopes (see [docs/security.md](docs/security.md) for the
+grant model):
+
+```sh
+# tokens.json: { "tokens": [ { "token": "…", "scopes": { "agent": "jarvis", "user": "*" } } ] }
+docker run --rm -p 8000:8000 \
+  -e AGENTMEM_HTTP_TOKENS_FILE=/run/secrets/tokens.json \
+  -v "$PWD/tokens.json:/run/secrets/tokens.json:ro" \
+  -v "$PWD/vault:/vault" \
+  ghcr.io/progamesigner/agentmem:latest
+```
+
 **Reachable by hostname (Kubernetes, ingress).** The http transport applies
 DNS-rebinding protection and, by default, only accepts the loopback hosts
 `localhost`, `127.0.0.1`, and `::1` in the inbound `Host` header. When clients
@@ -144,7 +158,8 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_POLICY` | `namespaced` | One of `scoped`, `namespaced`, `readonly`, `readwrite` (see [Policies](#policies)). |
 | `AGENTMEM_TRANSPORT` | `http` | `http` or `stdio`. |
 | `AGENTMEM_HTTP_BIND` | `127.0.0.1:8000` | HTTP bind address (http transport only). |
-| `AGENTMEM_HTTP_BEARER` | *(unset)* | If set, `POST/GET /mcp` requires `Authorization: Bearer <token>`. Unset → unauthenticated (a startup `WARN` is logged). |
+| `AGENTMEM_HTTP_BEARER` | *(unset)* | If set, `POST/GET /mcp` requires `Authorization: Bearer <token>`. The static bearer carries the all-scopes grant. When both this and `AGENTMEM_HTTP_TOKENS_FILE` are unset → unauthenticated (a startup `WARN` is logged). |
+| `AGENTMEM_HTTP_TOKENS_FILE` | *(unset)* | Path to a JSON file mapping bearer tokens to per-scope grants: `{ "tokens": [ { "token": "…", "scopes": { "agent": "jarvis", "user": "*" } } ] }`. Grant keys must be the active scheme's placeholders; values are exact strings or `*`; duplicate tokens union their grants. Requests presenting a scoped token may only name scopes its grant covers (`scope_denied` / HTTP `403` on `/v1/context` otherwise); unknown bearers get `401`. Read once at startup (rotation requires a restart); invalid files fail startup; token values never appear in logs or `--print-config`. Ignored under the `stdio` transport. |
 | `AGENTMEM_HTTP_ALLOWED_HOSTS` | *(unset)* | Comma-separated `Host` allow-list for the http transport's DNS-rebinding protection. Unset → loopback only (`localhost`, `127.0.0.1`, `::1`). List the cluster/ingress hostnames clients use (e.g. `agentmem.default.svc.cluster.local,agentmem.example.com:8000`); a bare hostname matches any port. The single value `*` disables `Host` validation (logs a `WARN`) — only for deployments that terminate `Host` trust at an upstream proxy. |
 | `AGENTMEM_TIMEZONE` | `UTC` | IANA timezone used to date diary entries. |
 | `AGENTMEM_HONOR_IGNORE_FILES` | `true` | Honour `.ignore` / `.gitignore` / `.obsidianignore` (nested, composed per-directory like `git`) for list and direct addressing. Strict boolean (`true`/`false`). |
@@ -332,9 +347,11 @@ curl -H 'Accept: application/json' \
 
 Missing, empty, or unexpected scope parameters return `400` with a
 `{ "error": … }` body; absent foundational files are never errors. The route sits
-behind the same `AGENTMEM_HTTP_BEARER` gate as `/mcp` (add
-`-H "Authorization: Bearer <token>"` when a bearer is configured); only the
-`/healthz` and `/readyz` probes are always reachable.
+behind the same authentication gate as `/mcp` (add
+`-H "Authorization: Bearer <token>"` when `AGENTMEM_HTTP_BEARER` or
+`AGENTMEM_HTTP_TOKENS_FILE` is configured); a scoped token requesting a scope
+outside its grant gets `403`. Only the `/healthz` and `/readyz` probes are
+always reachable.
 
 To bootstrap this context automatically at the start of every session — via a
 Claude Code / Codex `SessionStart` hook, an opencode plugin, or the MCP
