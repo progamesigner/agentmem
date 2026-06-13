@@ -24,10 +24,13 @@ COPY rust-toolchain.toml ./
 RUN rustup target add "$(cat /tmp/triple)"
 
 # Compile the static binary. The allowlisted .dockerignore keeps the context to
-# Cargo.*, rust-toolchain.toml, and src/. Copy the result out of the cache mount
-# (and pre-create the vault mountpoint) in the same layer so both persist.
+# Cargo.*, rust-toolchain.toml, src/, and benches/. benches/ is copied only so
+# cargo can resolve the [[bench]] target declared in Cargo.toml — manifest
+# parsing fails without it. Copy the result out of the cache mount (and
+# pre-create the vault mountpoint) in the same layer so both persist.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY benches ./benches
 
 # Optional cargo features for the build, e.g. CARGO_FEATURES=recall-tantivy.
 # Empty (the default) builds the lightweight `simple` backend; declared here so
