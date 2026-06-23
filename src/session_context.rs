@@ -42,6 +42,8 @@ const MISSING_SENTINEL: &str = "(not yet recorded — set via evolve_core_person
 const DEFAULT_TEMPLATE: &str = "\
 # Session Context
 
+{{scope_directive}}
+
 <PERSONA>
 {{files.persona}}
 </PERSONA>
@@ -187,6 +189,10 @@ pub fn render_session_context(
     // Server-generated tools guide, carrying the concrete active scope.
     context.insert("tools_guide".to_string(), tools_guide(tools, scope));
 
+    // Prominent scope banner for the top of the document, so the active scope
+    // keys survive truncation and tag-stripping by a consuming harness.
+    context.insert("scope_directive".to_string(), scope_directive(scope));
+
     // --- resolve the template source (layered) and render ---
     let source = resolve_template_source(storage, &rendered_scope, global_template_file)?;
     let rendered = Template::parse(&source).render(&context);
@@ -243,24 +249,53 @@ fn agents_vpath(storage: &Storage, relative: &str) -> Result<VirtualPath, Agentm
     VirtualPath::new(&full)
 }
 
+/// Join the active scope into a deterministic `key=value, …` string, or `None`
+/// for an empty scope. The single source of truth for how `{{scope_directive}}`
+/// and `{{tools_guide}}` name the scope, so the two can never drift in
+/// formatting or ordering (the `BTreeMap` already yields sorted key order).
+fn scope_keys_csv(scope: &BTreeMap<String, String>) -> Option<String> {
+    if scope.is_empty() {
+        return None;
+    }
+    Some(
+        scope
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+/// Build the prominent scope banner placed at the very top of the default
+/// template. Names the concrete active scope for a non-empty scope; falls back
+/// to generic phrasing (naming no specific key) for an empty scope.
+fn scope_directive(scope: &BTreeMap<String, String>) -> String {
+    match scope_keys_csv(scope) {
+        Some(keys) => format!(
+            "> **Active memory scope — `{keys}`.** Every AgentMem memory tool call MUST \
+             carry exactly these scope arguments on every turn — otherwise it errors or \
+             reads/writes the wrong vault."
+        ),
+        None => String::from(
+            "> **Active memory scope.** Every AgentMem memory tool call MUST carry the \
+             scope keys defined by the server's VFS scheme on every turn — otherwise it \
+             errors or reads/writes the wrong vault.",
+        ),
+    }
+}
+
 /// Build the memory-tools guide from the live tool catalogue, naming the
 /// concrete active scope so the agent knows exactly which keys/values to carry
 /// on every call (e.g. `agent=jarvis, user=tony`).
 fn tools_guide(tools: &[Tool], scope: &BTreeMap<String, String>) -> String {
-    let mut out = if scope.is_empty() {
-        String::from(
+    let mut out = match scope_keys_csv(scope) {
+        None => String::from(
             "These memory tools are available. Every call must carry the scope keys \
              defined by the server's VFS scheme.\n\n",
-        )
-    } else {
-        let keys = scope
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
+        ),
+        Some(keys) => format!(
             "These memory tools are available. Every call must carry these scope keys: {keys}.\n\n"
-        )
+        ),
     };
     for tool in tools {
         let desc = tool.description.as_deref().unwrap_or("");
@@ -426,6 +461,60 @@ mod tests {
             )
         );
         assert!(!guide.contains("these scope keys:"));
+    }
+
+    /// The scope directive names the concrete active scope as `key=value` pairs
+    /// in deterministic key order with an imperative to carry them.
+    #[test]
+    fn scope_directive_names_concrete_scope() {
+        let directive = scope_directive(&scope(&[("agent", "jarvis"), ("user", "tony")]));
+        assert!(directive.contains("agent=jarvis, user=tony"));
+        assert!(directive.contains("MUST"));
+    }
+
+    /// With no scope keys, the directive keeps generic phrasing and names no key.
+    #[test]
+    fn scope_directive_falls_back_to_generic_phrasing_for_empty_scope() {
+        let directive = scope_directive(&BTreeMap::new());
+        assert!(directive.contains("defined by the server's VFS scheme"));
+        assert!(directive.contains("MUST"));
+        assert!(!directive.contains('='));
+    }
+
+    /// The directive and the tools guide derive their `key=value` list from the
+    /// same source, so the list each emits is identical.
+    #[test]
+    fn scope_directive_and_tools_guide_share_keys() {
+        let s = scope(&[("agent", "jarvis"), ("user", "tony")]);
+        let keys = scope_keys_csv(&s).unwrap();
+        assert_eq!(keys, "agent=jarvis, user=tony");
+        assert!(scope_directive(&s).contains(&keys));
+        assert!(tools_guide(&[], &s).contains(&keys));
+    }
+
+    /// The default template leads with the scope banner: it appears after the
+    /// H1 and before `<PERSONA>`, rendered bare (not wrapped in any tag).
+    #[test]
+    fn default_template_leads_with_bare_scope_banner() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        let global = tmp.path().join("missing.md");
+        let sc = render_session_context(
+            &storage,
+            &global,
+            &[],
+            &scope(&[("agent", "jarvis"), ("user", "tony")]),
+        )
+        .unwrap();
+        let banner = sc.rendered.find("Active memory scope").unwrap();
+        let h1 = sc.rendered.find("# Session Context").unwrap();
+        let persona = sc.rendered.find("<PERSONA>").unwrap();
+        // Banner sits between the H1 and the first tag.
+        assert!(h1 < banner && banner < persona);
+        // It names the concrete scope and is not enclosed in a tag.
+        assert!(sc.rendered.contains("`agent=jarvis, user=tony`"));
+        let head = &sc.rendered[h1..persona];
+        assert!(!head.contains('<'));
     }
 
     /// `{{files.user}}` (file contents) and `{{scope.user}}` (scope value) are
