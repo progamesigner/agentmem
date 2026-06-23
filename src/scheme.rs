@@ -105,10 +105,10 @@ impl Scheme {
     pub fn placeholders(&self) -> Vec<&str> {
         let mut seen = Vec::new();
         for seg in &self.segments {
-            if let Segment::Placeholder(ident) = seg {
-                if !seen.contains(&ident.as_str()) {
-                    seen.push(ident.as_str());
-                }
+            if let Segment::Placeholder(ident) = seg
+                && !seen.contains(&ident.as_str())
+            {
+                seen.push(ident.as_str());
             }
         }
         seen

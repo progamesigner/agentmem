@@ -288,10 +288,10 @@ impl PathResolver {
 
         let mut clean = Utf8PathBuf::new();
         clean.push(&self.agents_dir);
-        if let Some(dir) = dir {
-            if !dir.as_str().is_empty() {
-                clean.push(dir);
-            }
+        if let Some(dir) = dir
+            && !dir.as_str().is_empty()
+        {
+            clean.push(dir);
         }
         clean.push(clean_name);
         Some(VirtualPath::from_relative(clean))

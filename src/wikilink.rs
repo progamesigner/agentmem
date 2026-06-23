@@ -460,24 +460,25 @@ where
         }
 
         // Markdown link: "[text](target)". A leading '!' (image) is preserved.
-        if bytes[i] == b'[' && !bytes[i..].starts_with(b"[[") {
-            if let Some(parsed) = parse_markdown_link(content, i) {
-                let (text_end, target, link_end) = parsed;
-                if is_rewritable_markdown_target(target) {
-                    match f(LinkKind::Markdown, target)? {
-                        Some(new) => {
-                            out.push_str(&content[i..text_end]); // "[text]("
-                            out.push_str(&new);
-                            out.push(')');
-                        }
-                        None => out.push_str(&content[i..link_end]),
+        if bytes[i] == b'['
+            && !bytes[i..].starts_with(b"[[")
+            && let Some(parsed) = parse_markdown_link(content, i)
+        {
+            let (text_end, target, link_end) = parsed;
+            if is_rewritable_markdown_target(target) {
+                match f(LinkKind::Markdown, target)? {
+                    Some(new) => {
+                        out.push_str(&content[i..text_end]); // "[text]("
+                        out.push_str(&new);
+                        out.push(')');
                     }
-                } else {
-                    out.push_str(&content[i..link_end]);
+                    None => out.push_str(&content[i..link_end]),
                 }
-                i = link_end;
-                continue;
+            } else {
+                out.push_str(&content[i..link_end]);
             }
+            i = link_end;
+            continue;
         }
 
         // Default: copy one UTF-8 char.

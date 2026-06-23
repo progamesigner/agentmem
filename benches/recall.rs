@@ -31,7 +31,11 @@ fn scope_name(s: usize) -> String {
 /// Deterministic lorem-like body for note `i`. Every tenth note seeds the
 /// keyword `borrow`, so query benches scan a fixed, predictable hit subset.
 fn body(i: usize) -> String {
-    let keyword = if i % 10 == 0 { "borrow" } else { "lend" };
+    let keyword = if i.is_multiple_of(10) {
+        "borrow"
+    } else {
+        "lend"
+    };
     format!(
         "Note {i}. Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
          The {keyword} checker enforces ownership across function boundaries. \

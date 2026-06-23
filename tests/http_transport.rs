@@ -71,10 +71,10 @@ async fn mcp_post_status(base: &str, host: &str) -> u16 {
 async fn wait_health(base: &str) {
     let client = reqwest::Client::new();
     for _ in 0..200 {
-        if let Ok(resp) = client.get(format!("{base}/healthz")).send().await {
-            if resp.status().is_success() {
-                return;
-            }
+        if let Ok(resp) = client.get(format!("{base}/healthz")).send().await
+            && resp.status().is_success()
+        {
+            return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
