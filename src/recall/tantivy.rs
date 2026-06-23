@@ -9,7 +9,7 @@
 
 use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, QueryParser};
-use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT, TantivyDocument};
+use tantivy::schema::{Field, STORED, STRING, Schema, TEXT, TantivyDocument, Value};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term};
 
@@ -170,7 +170,7 @@ impl BackendIndex for TantivyIndex {
             let generator = SnippetGenerator::create(&searcher, &*query, self.body).ok();
             let limit = searcher.num_docs().max(1) as usize;
             let top = searcher
-                .search(&query, &TopDocs::with_limit(limit))
+                .search(&query, &TopDocs::with_limit(limit).order_by_score())
                 .unwrap_or_default();
             for (score, address) in top {
                 let Ok(doc) = searcher.doc::<TantivyDocument>(address) else {
@@ -191,7 +191,7 @@ impl BackendIndex for TantivyIndex {
             // No text query: a bounded full scan filtered by regex and/or properties.
             let limit = searcher.num_docs().max(1) as usize;
             let all = searcher
-                .search(&AllQuery, &TopDocs::with_limit(limit))
+                .search(&AllQuery, &TopDocs::with_limit(limit).order_by_score())
                 .unwrap_or_default();
             let cap_applies = compiled.regex.is_some();
             let mut scanned = 0usize;
@@ -313,10 +313,8 @@ fn compare(value: Option<&serde_json::Value>, want: Option<&str>, op: FilterOp) 
 
 /// Read a stored text field as a `String`.
 fn stored_str(doc: &TantivyDocument, field: Field) -> Option<String> {
-    doc.get_first(field).and_then(|value| match value {
-        OwnedValue::Str(s) => Some(s.clone()),
-        _ => None,
-    })
+    doc.get_first(field)
+        .and_then(|value| value.as_str().map(str::to_string))
 }
 
 /// Truncate to at most `max` bytes on a char boundary, adding an ellipsis.
