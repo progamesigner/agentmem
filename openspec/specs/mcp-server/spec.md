@@ -12,7 +12,7 @@ The system SHALL ship a single Rust binary `agentmem` that, on launch, reads con
 
 #### Scenario: Successful http startup (default)
 - **WHEN** `agentmem` is launched with `AGENTMEM_TRANSPORT` unset (defaults to `http`) and a valid `AGENTMEM_ROOT_DIR`
-- **THEN** the process binds a TCP listener on `127.0.0.1:8000`, serves the MCP Streamable HTTP endpoint at `POST /mcp`, the MCP SSE endpoint at `GET /mcp`, a liveness route at `GET /healthz`, a readiness route at `GET /readyz`, and runs until receiving `SIGTERM`/`SIGINT`
+- **THEN** the process binds a TCP listener on `127.0.0.1:8000`, serves the MCP Streamable HTTP endpoint at `POST /mcp` in stateless JSON-response mode, a liveness route at `GET /healthz`, a readiness route at `GET /readyz`, and runs until receiving `SIGTERM`/`SIGINT`
 
 #### Scenario: Misconfiguration fails fast
 - **WHEN** `AGENTMEM_ROOT_DIR` is missing or invalid, or `AGENTMEM_VFS_SCHEME`/`AGENTMEM_POLICY`/`AGENTMEM_AGENTS_DIR` is set to an invalid value
@@ -113,6 +113,19 @@ This makes the HTTP transport usable behind a Kubernetes Service or ingress, whe
 #### Scenario: Validation disabled by wildcard
 - **WHEN** the server runs under `http` transport with `AGENTMEM_HTTP_ALLOWED_HOSTS=*` and a client sends a request carrying any `Host` header
 - **THEN** the transport accepts the request without `Host` validation
+
+### Requirement: HTTP transport stateless JSON responses
+The system SHALL, when running under `http` transport, configure the `rmcp` Streamable HTTP service in stateless mode with direct JSON responses (`stateful_mode = false`, `json_response = true`). Each `POST /mcp` request SHALL be handled independently and its JSON-RPC response returned with `Content-Type: application/json`, not `text/event-stream`. The server SHALL NOT issue an `mcp-session-id` header and SHALL NOT depend on a per-session SSE event stream for delivering responses or notifications, consistent with its advertised capabilities (no `listChanged`, no `subscribe`).
+
+This matches the server's request→response semantics — every tool call resolves synchronously and the server never initiates messages — and avoids the SSE-on-POST response shape and `GET /mcp` resume churn that break clients which do not consume server-streamed responses.
+
+#### Scenario: Tool call returns a JSON response
+- **WHEN** a client completes the `initialize` handshake and sends a `tools/call` request to `POST /mcp` with `Accept: application/json, text/event-stream`
+- **THEN** the server responds with `Content-Type: application/json` carrying the single JSON-RPC result, and the connection closes without an SSE event stream
+
+#### Scenario: No session id is issued
+- **WHEN** a client sends an `initialize` request to `POST /mcp`
+- **THEN** the response does NOT include an `mcp-session-id` header and subsequent requests are accepted without one
 
 ### Requirement: Resources and prompts capability advertisement
 The system SHALL advertise the resources and prompts capabilities during the MCP `initialize` handshake, in addition to tools, so that clients discover the `session-context` resource and the `session-context` prompt.

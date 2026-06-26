@@ -183,6 +183,85 @@ async fn http_default_bind_health_and_mcp_roundtrip() {
     child.kill().await.unwrap();
 }
 
+/// Stateless + JSON-direct mode: `POST /mcp` answers with `application/json`
+/// (not `text/event-stream`), issues no `Mcp-Session-Id`, and a follow-up
+/// request succeeds without carrying one.
+#[tokio::test]
+async fn http_post_returns_json_and_no_session_id() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18658";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+    let post = |body: String| {
+        client
+            .post(format!("{base}/mcp"))
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+    };
+
+    // initialize → plain JSON, no session id header.
+    let init = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": { "name": "test", "version": "0" }
+        }
+    });
+    let resp = post(init.to_string()).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "initialize must return application/json, not SSE"
+    );
+    assert!(
+        resp.headers().get("mcp-session-id").is_none(),
+        "stateless mode must not issue a session id"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["result"]["serverInfo"]["name"], "rmcp");
+
+    // tools/call carrying no session id still resolves, as plain JSON.
+    let call = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "load_session_context",
+            "arguments": { "agent": "jarvis", "user": "tony" }
+        }
+    });
+    let resp = post(call.to_string()).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "tools/call must return application/json, not SSE"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_ne!(body["result"]["isError"], true);
+    assert!(
+        body["result"]["structuredContent"]["rendered"]
+            .as_str()
+            .unwrap()
+            .contains("# Session Context")
+    );
+
+    child.kill().await.unwrap();
+}
+
 #[tokio::test]
 async fn http_readyz_and_healthz_probes() {
     let tmp = assert_fs::TempDir::new().unwrap();
@@ -618,20 +697,12 @@ async fn union_of_grants_for_a_repeated_token() {
     child.kill().await.unwrap();
 }
 
-/// Parse the JSON-RPC message out of a Streamable-HTTP SSE response body,
-/// skipping priming/keep-alive events that carry no JSON payload.
-fn sse_json(body: &str) -> serde_json::Value {
-    body.lines()
-        .filter_map(|line| line.strip_prefix("data: "))
-        .find_map(|data| serde_json::from_str(data.trim()).ok())
-        .unwrap_or_else(|| panic!("no JSON SSE data line in: {body}"))
-}
-
-/// Grants are resolved per request, not cached on the session: one live MCP
-/// session accepts calls under whichever bearer each POST presents, and an
-/// unknown bearer is rejected mid-session.
+/// Grants are resolved per request, never cached. In stateless mode each
+/// `POST /mcp` is independent: it carries its own bearer, gets a plain
+/// `application/json` response with no session id, and an unknown bearer is
+/// rejected — the prior request grants it nothing.
 #[tokio::test]
-async fn grant_resolved_per_request_on_a_live_session() {
+async fn grant_resolved_per_request_stateless() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let aux = assert_fs::TempDir::new().unwrap();
     let tokens = write_tokens_file(
@@ -647,42 +718,15 @@ async fn grant_resolved_per_request_on_a_live_session() {
     wait_health(&base).await;
 
     let client = reqwest::Client::new();
-    let post = |bearer: &str, body: String, session: Option<String>| {
-        let mut req = client
+    let post = |bearer: &str, body: String| {
+        client
             .post(format!("{base}/mcp"))
             .header("Accept", "application/json, text/event-stream")
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {bearer}"))
-            .body(body);
-        if let Some(id) = session {
-            req = req.header("Mcp-Session-Id", id);
-        }
-        req.send()
+            .body(body)
+            .send()
     };
-
-    // Handshake under t1.
-    let init = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": { "name": "test", "version": "0" }
-        }
-    });
-    let resp = post("t1", init.to_string(), None).await.unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    let session = resp
-        .headers()
-        .get("mcp-session-id")
-        .expect("session id header")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-    let resp = post("t1", initialized.to_string(), Some(session.clone()))
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 202);
 
     let call = |id: u64, agent: &str, user: &str| {
         json!({
@@ -695,33 +739,26 @@ async fn grant_resolved_per_request_on_a_live_session() {
         .to_string()
     };
 
-    // t1 reaches its own scope on this session.
-    let resp = post("t1", call(2, "jarvis", "tony"), Some(session.clone()))
-        .await
-        .unwrap();
+    // t1 reaches its own scope; the result is a plain JSON body, no session id.
+    let resp = post("t1", call(2, "jarvis", "tony")).await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
-    let msg = sse_json(&resp.text().await.unwrap());
+    assert!(resp.headers().get("mcp-session-id").is_none());
+    let msg: serde_json::Value = resp.json().await.unwrap();
     assert_ne!(msg["result"]["isError"], true);
 
-    // The same session honours t3's different grant on the next request …
-    let resp = post("t3", call(3, "friday", "tony"), Some(session.clone()))
-        .await
-        .unwrap();
-    let msg = sse_json(&resp.text().await.unwrap());
+    // A different bearer on the next request resolves to its own grant …
+    let resp = post("t3", call(3, "friday", "tony")).await.unwrap();
+    let msg: serde_json::Value = resp.json().await.unwrap();
     assert_ne!(msg["result"]["isError"], true);
 
-    // … and denies t3 outside it (jarvis is t1's scope, not t3's).
-    let resp = post("t3", call(4, "jarvis", "tony"), Some(session.clone()))
-        .await
-        .unwrap();
-    let msg = sse_json(&resp.text().await.unwrap());
+    // … and is denied outside it (jarvis is t1's scope, not t3's).
+    let resp = post("t3", call(4, "jarvis", "tony")).await.unwrap();
+    let msg: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(msg["result"]["isError"], true);
     assert_eq!(msg["result"]["structuredContent"]["code"], "scope_denied");
 
-    // A bearer not in the table is rejected mid-session: nothing was cached.
-    let resp = post("revoked", call(5, "jarvis", "tony"), Some(session))
-        .await
-        .unwrap();
+    // A bearer not in the table is rejected; the prior requests cached nothing.
+    let resp = post("revoked", call(5, "jarvis", "tony")).await.unwrap();
     assert_eq!(resp.status().as_u16(), 401);
 
     child.kill().await.unwrap();

@@ -3,7 +3,11 @@
 //! Mounts the `rmcp` Streamable HTTP service at `POST`/`GET`/`DELETE /mcp` and a
 //! plain `GET /v1/context` read endpoint behind an `axum` router that also serves
 //! the Kubernetes-style `GET /healthz` (liveness) and `GET /readyz` (readiness)
-//! probes. When `AGENTMEM_HTTP_BEARER` and/or `AGENTMEM_HTTP_TOKENS_FILE` is
+//! probes. The MCP service runs **stateless** with **JSON-direct responses**: a
+//! tool call resolves synchronously and the server advertises no notifications,
+//! so each `POST /mcp` is answered with a plain `application/json` body rather
+//! than an SSE stream, no `Mcp-Session-Id` is issued, and the `GET /mcp` stream
+//! carries nothing. When `AGENTMEM_HTTP_BEARER` and/or `AGENTMEM_HTTP_TOKENS_FILE` is
 //! configured, an `axum` middleware resolves the presented `Authorization:
 //! Bearer <token>` header to a scope [`Grant`] — all scopes for the static
 //! bearer, the configured grant for a scoped token — attaches it to the request,
@@ -22,7 +26,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
 use crate::config::{Grant, TokenGrants};
@@ -56,6 +60,8 @@ pub async fn serve(
         }
     }
 
+    // Host validation differs per branch; statelessness and JSON-direct
+    // responses are applied uniformly to whichever base config is chosen.
     let http_config = if allowed_hosts.is_empty() {
         // No override: keep rmcp's loopback-only DNS-rebinding default.
         StreamableHttpServerConfig::default()
@@ -68,14 +74,22 @@ pub async fn serve(
     } else {
         tracing::info!(allowed_hosts = %allowed_hosts.join(", "), "Host validation allow-list");
         StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts)
-    };
+    }
+    // Stateless + JSON-direct: every tool call is a synchronous request→response
+    // and the server advertises no notifications, so there is nothing for a
+    // session or an SSE stream to carry. Each `POST /mcp` is answered with a
+    // plain `application/json` body, no `Mcp-Session-Id` is issued, and the
+    // `GET /mcp` resume churn disappears.
+    .with_stateful_mode(false)
+    .with_json_response(true);
 
     let mcp_service = StreamableHttpService::new(
         {
             let server = server.clone();
             move || Ok(server.clone())
         },
-        Arc::new(LocalSessionManager::default()),
+        // No sessions: the stateless POST path never touches the manager.
+        Arc::new(NeverSessionManager::default()),
         http_config,
     );
 
