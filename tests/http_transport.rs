@@ -262,6 +262,49 @@ async fn http_post_returns_json_and_no_session_id() {
     child.kill().await.unwrap();
 }
 
+/// Stateless mode skips rmcp's built-in handshake negotiation, so the server
+/// must echo the client's requested protocol version itself — otherwise it
+/// always advertises its latest, which older clients reject.
+#[tokio::test]
+async fn http_initialize_echoes_requested_protocol_version() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18659";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+    // Each known version the client asks for must come back unchanged.
+    for requested in ["2025-03-26", "2025-06-18", "2025-11-25"] {
+        let resp = client
+            .post(format!("{base}/mcp"))
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .body(
+                json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {
+                        "protocolVersion": requested,
+                        "capabilities": {},
+                        "clientInfo": { "name": "test", "version": "0" }
+                    }
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["result"]["protocolVersion"], requested,
+            "server must echo the requested protocol version {requested}"
+        );
+    }
+
+    child.kill().await.unwrap();
+}
+
 #[tokio::test]
 async fn http_readyz_and_healthz_probes() {
     let tmp = assert_fs::TempDir::new().unwrap();

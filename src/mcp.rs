@@ -14,10 +14,10 @@ use std::sync::Arc;
 use rmcp::ServerHandler;
 use rmcp::model::{
     AnnotateAble, CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
-    ListPromptsResult, ListResourceTemplatesResult, ListToolsResult, PaginatedRequestParams,
-    Prompt, PromptArgument, PromptMessage, PromptMessageRole, RawResourceTemplate,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo,
+    InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument, PromptMessage,
+    PromptMessageRole, ProtocolVersion, RawResourceTemplate, ReadResourceRequestParams,
+    ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ErrorData as McpError, model::JsonObject};
@@ -230,6 +230,28 @@ impl ServerHandler for AgentmemServer {
                 .to_string(),
         );
         info
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        // Stateless `serve_directly` bypasses rmcp's normal initialize handshake
+        // negotiation, so the default handler would advertise our latest
+        // protocol version (`ProtocolVersion::LATEST`) regardless of what the
+        // client asked for. Clients pinned to an older revision then reject the
+        // handshake (e.g. Raycast: "Unsupported protocol version"). Restore the
+        // negotiation here: echo the client's requested version whenever we
+        // recognize it, otherwise keep our default.
+        let mut info = self.get_info();
+        if ProtocolVersion::KNOWN_VERSIONS.contains(&request.protocol_version) {
+            info.protocol_version = request.protocol_version.clone();
+        }
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(info)
     }
 
     async fn list_tools(
