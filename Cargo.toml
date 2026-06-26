@@ -1,6 +1,6 @@
 [package]
 name = "agentmem"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 description = "An MCP server fronting a plain-markdown vault for multi-tenant agent memory."
 authors = ["Yang Sheng Han <progamesigner@gmail.com>"]
