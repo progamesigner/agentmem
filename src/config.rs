@@ -24,6 +24,8 @@ pub const DEFAULT_AGENTS_DIR: &str = "Agents";
 pub const DEFAULT_SCHEME: &str = "<agent>.<user>";
 /// The default session-context template filename, relative to the vault root.
 pub const DEFAULT_SESSION_CONTEXT_FILE: &str = "AGENT_SESSION_CONTEXT.md";
+pub const DEFAULT_SESSION_BOOTSTRAP_FILE: &str = "AGENT_SESSION_BOOTSTRAP.md";
+pub const DEFAULT_MEMORY_LAYOUT_FILE: &str = "AGENT_MEMORY_LAYOUT.md";
 /// The default HTTP bind address.
 pub const DEFAULT_HTTP_BIND: &str = "127.0.0.1:8000";
 /// The default tracing filter directive.
@@ -45,6 +47,8 @@ const VAR_ROOT_DIR: &str = "AGENTMEM_ROOT_DIR";
 const VAR_AGENTS_DIR: &str = "AGENTMEM_AGENTS_DIR";
 const VAR_SCHEME: &str = "AGENTMEM_VFS_SCHEME";
 const VAR_SESSION_CONTEXT_TEMPLATE_FILE: &str = "AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE";
+const VAR_SESSION_BOOTSTRAP_TEMPLATE_FILE: &str = "AGENTMEM_SESSION_BOOTSTRAP_TEMPLATE_FILE";
+const VAR_MEMORY_LAYOUT_TEMPLATE_FILE: &str = "AGENTMEM_MEMORY_LAYOUT_TEMPLATE_FILE";
 const VAR_POLICY: &str = "AGENTMEM_POLICY";
 const VAR_TRANSPORT: &str = "AGENTMEM_TRANSPORT";
 const VAR_HTTP_BIND: &str = "AGENTMEM_HTTP_BIND";
@@ -361,8 +365,12 @@ pub struct Config {
     /// vault root".
     pub agents_dir: Utf8PathBuf,
     pub scheme: Scheme,
-    /// Absolute path to the global session-context template file (may not exist).
+    /// Absolute path to the global session-context (full) template file (may not exist).
     pub session_context_template_file: PathBuf,
+    /// Absolute path to the global session-bootstrap (lean) template file (may not exist).
+    pub session_bootstrap_template_file: PathBuf,
+    /// Absolute path to the global memory-layout template file (may not exist).
+    pub memory_layout_template_file: PathBuf,
     pub policy: Policy,
     pub transport: Transport,
     pub timezone: Tz,
@@ -398,6 +406,12 @@ pub struct Cli {
     /// Global session-context template file (overrides AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE).
     #[arg(long)]
     pub session_context_template_file: Option<PathBuf>,
+    /// Global session-bootstrap template file (overrides AGENTMEM_SESSION_BOOTSTRAP_TEMPLATE_FILE).
+    #[arg(long)]
+    pub session_bootstrap_template_file: Option<PathBuf>,
+    /// Global memory-layout template file (overrides AGENTMEM_MEMORY_LAYOUT_TEMPLATE_FILE).
+    #[arg(long)]
+    pub memory_layout_template_file: Option<PathBuf>,
     /// Policy: scoped|namespaced|readonly|readwrite (overrides AGENTMEM_POLICY).
     #[arg(long)]
     pub policy: Option<String>,
@@ -458,6 +472,18 @@ impl Cli {
         if let Some(v) = &self.session_context_template_file {
             m.insert(
                 VAR_SESSION_CONTEXT_TEMPLATE_FILE,
+                v.to_string_lossy().into_owned(),
+            );
+        }
+        if let Some(v) = &self.session_bootstrap_template_file {
+            m.insert(
+                VAR_SESSION_BOOTSTRAP_TEMPLATE_FILE,
+                v.to_string_lossy().into_owned(),
+            );
+        }
+        if let Some(v) = &self.memory_layout_template_file {
+            m.insert(
+                VAR_MEMORY_LAYOUT_TEMPLATE_FILE,
                 v.to_string_lossy().into_owned(),
             );
         }
@@ -552,17 +578,26 @@ impl Config {
         let scheme = Scheme::parse(&scheme_raw)
             .map_err(|e| config_err(format!("{VAR_SCHEME} is invalid ({scheme_raw:?}): {e}")))?;
 
-        // --- session-context template file ---
-        // A relative path is resolved against the vault root; the default is
-        // `<root>/AGENT_SESSION_CONTEXT.md`. The file need not exist.
-        let session_context_template_file =
-            match get(VAR_SESSION_CONTEXT_TEMPLATE_FILE).filter(|s| !s.is_empty()) {
+        // --- template files (full context, lean bootstrap, layout) ---
+        // A relative path is resolved against the vault root; each has a default
+        // filename under the root. The files need not exist.
+        let resolve_template_file = |var: &str, default_file: &str| -> PathBuf {
+            match get(var).filter(|s| !s.is_empty()) {
                 Some(raw) => {
                     let p = PathBuf::from(raw);
                     if p.is_absolute() { p } else { root_dir.join(p) }
                 }
-                None => root_dir.join(DEFAULT_SESSION_CONTEXT_FILE),
-            };
+                None => root_dir.join(default_file),
+            }
+        };
+        let session_context_template_file =
+            resolve_template_file(VAR_SESSION_CONTEXT_TEMPLATE_FILE, DEFAULT_SESSION_CONTEXT_FILE);
+        let session_bootstrap_template_file = resolve_template_file(
+            VAR_SESSION_BOOTSTRAP_TEMPLATE_FILE,
+            DEFAULT_SESSION_BOOTSTRAP_FILE,
+        );
+        let memory_layout_template_file =
+            resolve_template_file(VAR_MEMORY_LAYOUT_TEMPLATE_FILE, DEFAULT_MEMORY_LAYOUT_FILE);
 
         // --- policy ---
         let policy_raw = get(VAR_POLICY).unwrap_or_else(|| "namespaced".to_string());
@@ -613,6 +648,8 @@ impl Config {
             agents_dir,
             scheme,
             session_context_template_file,
+            session_bootstrap_template_file,
+            memory_layout_template_file,
             policy,
             transport,
             timezone,
@@ -660,6 +697,8 @@ impl Config {
              agents_dir = {agents}\n\
              scheme = {scheme:?}\n\
              session_context_template_file = {sctf}\n\
+             session_bootstrap_template_file = {sbtf}\n\
+             memory_layout_template_file = {mltf}\n\
              policy = {policy:?}\n\
              transport = {transport}\n\
              timezone = {tz}\n\
@@ -676,6 +715,8 @@ impl Config {
             },
             scheme = self.scheme,
             sctf = self.session_context_template_file.display(),
+            sbtf = self.session_bootstrap_template_file.display(),
+            mltf = self.memory_layout_template_file.display(),
             policy = self.policy,
             transport = transport,
             tz = self.timezone,
@@ -1006,6 +1047,56 @@ mod tests {
         assert_eq!(
             cfg.session_context_template_file,
             PathBuf::from("/etc/agentmem/bootstrap.md")
+        );
+    }
+
+    #[test]
+    fn session_bootstrap_and_layout_template_files_default_and_override() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+
+        // Defaults: <root>/AGENT_SESSION_BOOTSTRAP.md and <root>/AGENT_MEMORY_LAYOUT.md.
+        let cfg = build(with_root(&tmp, &[])).unwrap();
+        assert_eq!(
+            cfg.session_bootstrap_template_file,
+            root.join("AGENT_SESSION_BOOTSTRAP.md")
+        );
+        assert_eq!(
+            cfg.memory_layout_template_file,
+            root.join("AGENT_MEMORY_LAYOUT.md")
+        );
+
+        // Relative override resolves against the vault root.
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_SESSION_BOOTSTRAP_TEMPLATE_FILE, "custom/lean.md"),
+                (VAR_MEMORY_LAYOUT_TEMPLATE_FILE, "custom/layout.md"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.session_bootstrap_template_file,
+            root.join("custom/lean.md")
+        );
+        assert_eq!(cfg.memory_layout_template_file, root.join("custom/layout.md"));
+
+        // Absolute override is used as-is.
+        let cfg = build(with_root(
+            &tmp,
+            &[
+                (VAR_SESSION_BOOTSTRAP_TEMPLATE_FILE, "/etc/agentmem/lean.md"),
+                (VAR_MEMORY_LAYOUT_TEMPLATE_FILE, "/etc/agentmem/layout.md"),
+            ],
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.session_bootstrap_template_file,
+            PathBuf::from("/etc/agentmem/lean.md")
+        );
+        assert_eq!(
+            cfg.memory_layout_template_file,
+            PathBuf::from("/etc/agentmem/layout.md")
         );
     }
 

@@ -13,8 +13,8 @@
 
 ## 3. Configuration
 
-- [ ] 3.1 Add `AGENTMEM_SESSION_BOOTSTRAP_TEMPLATE_FILE` (default `<root>/AGENT_SESSION_BOOTSTRAP.md`) and `AGENTMEM_MEMORY_LAYOUT_TEMPLATE_FILE` (default `<root>/AGENT_MEMORY_LAYOUT.md`) to the config struct, env parsing, and defaults.
-- [ ] 3.2 Plumb both new paths through to the renderer/layout call sites.
+- [x] 3.1 Add `AGENTMEM_SESSION_BOOTSTRAP_TEMPLATE_FILE` (default `<root>/AGENT_SESSION_BOOTSTRAP.md`) and `AGENTMEM_MEMORY_LAYOUT_TEMPLATE_FILE` (default `<root>/AGENT_MEMORY_LAYOUT.md`) to the config struct, env parsing, and defaults.
+- [~] 3.2 Plumb both new paths through to the renderer/layout call sites. <!-- Toolbox/server wiring lands with the renderer commit -->>
 
 ## 4. HTTP endpoints
 
