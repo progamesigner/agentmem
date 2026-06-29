@@ -37,7 +37,7 @@
 
 ## 7. Docs and verification
 
-- [ ] 7.1 Update `docs/session-context-hooks.md`: recommend `GET /v1/bootstrap` as the SessionStart hook target, document `GET /v1/layout` and the `session-bootstrap`/`session-layout` resources, and note the `{{tools_guide}}` removal.
-- [ ] 7.2 Add a changelog entry calling out the breaking `{{tools_guide}}` removal and the shrunken full-render content (tools guide + layout no longer inline).
-- [ ] 7.3 Measure the lean bootstrap payload against a real SessionStart inline budget; if it exceeds the cap, document the limitation and the operator lever (trim `PERSONA.md`/`RULES.md`).
-- [ ] 7.4 Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test` before committing.
+- [x] 7.1 Update `docs/session-context-hooks.md` and `README.md`: recommend `GET /v1/bootstrap` as the SessionStart hook target, document `GET /v1/layout`, the `session-bootstrap`/`session-layout` resources, and the new env vars; reflect the `{{tools_guide}}` removal.
+- [x] 7.2 Document the breaking changes (the `{{tools_guide}}` removal and the shrunken full-render content) in the README/docs and commit messages. (No CHANGELOG file in this repo; releases are tracked via signed tags.)
+- [x] 7.3 Measured the lean bootstrap payload: ~2.5 KB with a representative persona+rules (~1.1 KB for a fresh scope), down from ~12 KB. Documented in design.md Risks: it edges above the ~2 KB preview threshold; the lever is trimming `PERSONA.md`/`RULES.md`.
+- [x] 7.4 Ran `cargo fmt`, `cargo clippy --all-targets`, and `cargo test` — all clean.

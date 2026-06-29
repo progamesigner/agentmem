@@ -1,27 +1,33 @@
 # Loading session context at session start
 
-This guide wires the `GET /v1/context` endpoint (see [Session context](../README.md#session-context)) into the session-start mechanism of common agent clients, so every new session is bootstrapped with the scope's rendered persona/rules/memory automatically — no manual tool call.
+This guide wires the `GET /v1/bootstrap` endpoint (see [Session context](../README.md#session-context)) into the session-start mechanism of common agent clients, so every new session is bootstrapped with the scope's lean persona/rules automatically — no manual tool call.
 
-> **HTTP transport only.** `GET /v1/context` is a plain HTTP route served by the HTTP transport. In stdio mode there is no HTTP listener and these hooks cannot reach it. Start the server with the default `--transport http` (or `AGENTMEM_TRANSPORT=http`), bound to `127.0.0.1:8000` by default.
+> **HTTP transport only.** `GET /v1/bootstrap` is a plain HTTP route served by the HTTP transport. In stdio mode there is no HTTP listener and these hooks cannot reach it. Start the server with the default `--transport http` (or `AGENTMEM_TRANSPORT=http`), bound to `127.0.0.1:8000` by default.
+
+> **Which endpoint?** Three render endpoints share the same scope binding, auth, and negotiation:
+> - **`/v1/bootstrap`** — the **lean** bootstrap (scope + persona + rules + pointers). The recommended SessionStart payload: small enough to survive a harness's byte budget, and it tells the agent to pull the rest on demand.
+> - **`/v1/context`** — the **full** context (adds memory, user profile, workflow prompt). What `load_session_context` returns; fetch it when you want everything injected up front.
+> - **`/v1/layout`** — the vault structure and conventions, on demand.
 
 ## The building block
 
 Every recipe below ultimately runs one request. It returns the rendered bootstrap as `text/markdown`, ready to drop into a system/developer message:
 
 ```sh
-curl -sf 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony'
+curl -sf 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony'
 ```
 
 - Replace `agent`/`user` with your VFS-scheme placeholders and values. Each scheme placeholder is one query parameter.
 - `-s` silences progress; `-f` makes curl exit non-zero (and emit nothing) on HTTP errors or a down server, so a stopped AgentMem never injects a broken payload or blocks startup.
 - Add `-H "Authorization: Bearer <token>"` when the server was started with `--http-bearer` / `AGENTMEM_HTTP_BEARER`. Prefer referencing it from the environment (`-H "Authorization: Bearer $AGENTMEM_HTTP_BEARER"`) over inlining the secret.
 - Add `-H 'Accept: application/json'` if you need `{ rendered, missing }` instead of raw markdown (for hooks that expect JSON).
+- Swap `/v1/bootstrap` for `/v1/context` to inject the full context up front, or `/v1/layout` for the vault conventions.
 
 Quick sanity check before wiring any client:
 
 ```sh
 curl -sf 'http://127.0.0.1:8000/healthz' && echo ok    # server up?
-curl -sf 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony' | head    # context renders?
+curl -sf 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony' | head    # bootstrap renders?
 ```
 
 ## Choosing an approach
@@ -45,7 +51,7 @@ Add to `~/.claude/settings.json` (user-level → applies to every project) or a 
         "hooks": [
           {
             "type": "command",
-            "command": "curl -sf 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony' -H \"Authorization: Bearer $AGENTMEM_HTTP_BEARER\""
+            "command": "curl -sf 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony' -H \"Authorization: Bearer $AGENTMEM_HTTP_BEARER\""
           }
         ]
       }
@@ -69,7 +75,7 @@ matcher = "startup|resume"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "curl -sf 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony' -H \"Authorization: Bearer $AGENTMEM_HTTP_BEARER\""
+command = "curl -sf 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony' -H \"Authorization: Bearer $AGENTMEM_HTTP_BEARER\""
 statusMessage = "Loading AgentMem session context"
 timeout = 30
 ```
@@ -112,7 +118,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 export const AgentmemContext: Plugin = async ({ $ }) => {
   return {
     "session.created": async (_input, output) => {
-      const md = await $`curl -sf 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony'`.text()
+      const md = await $`curl -sf 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony'`.text()
       if (md) output.context?.push(md)
     },
   }
@@ -135,7 +141,7 @@ A transport-agnostic alternative that needs no model cooperation: wrap your clie
 
 ```sh
 #!/usr/bin/env sh
-ctx="$(curl -sf 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony')"
+ctx="$(curl -sf 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony')"
 exec your-agent --system "$ctx" "$@"   # adapt to the client's prompt flag
 ```
 

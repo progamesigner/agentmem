@@ -154,7 +154,9 @@ and overrides — the matching variable (`--root-dir`, `--policy`, `--http-bind`
 | `AGENTMEM_ROOT_DIR` | *(required)* | Absolute path to the vault root. Must exist, be a directory, and be canonicalisable. |
 | `AGENTMEM_AGENTS_DIR` | `Agents` | Agents folder relative to the root. `.` or empty means the vault root itself is the agents folder. Must be relative with no traversal. |
 | `AGENTMEM_VFS_SCHEME` | `<agent>.<user>` | VFS suffix scheme. Each `<ident>` becomes a required scope parameter on every tool call. Empty string disables suffixing. |
-| `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` | `<root>/AGENT_SESSION_CONTEXT.md` | Path to the global session-context template (see [Session context](#session-context)). Relative paths resolve against the vault root. Need not exist — falls back to the compiled-in default. |
+| `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` | `<root>/AGENT_SESSION_CONTEXT.md` | Path to the global full session-context template (see [Session context](#session-context)). Relative paths resolve against the vault root. Need not exist — falls back to the compiled-in default. |
+| `AGENTMEM_SESSION_BOOTSTRAP_TEMPLATE_FILE` | `<root>/AGENT_SESSION_BOOTSTRAP.md` | Path to the global lean session-bootstrap template (see [Session context](#session-context)). Relative paths resolve against the vault root. Need not exist — falls back to the compiled-in default. |
+| `AGENTMEM_MEMORY_LAYOUT_TEMPLATE_FILE` | `<root>/AGENT_MEMORY_LAYOUT.md` | Path to the global memory-layout template (see [Session context](#session-context)). Relative paths resolve against the vault root. Need not exist — falls back to the compiled-in default. |
 | `AGENTMEM_POLICY` | `namespaced` | One of `scoped`, `namespaced`, `readonly`, `readwrite` (see [Policies](#policies)). |
 | `AGENTMEM_TRANSPORT` | `http` | `http` or `stdio`. |
 | `AGENTMEM_HTTP_BIND` | `127.0.0.1:8000` | HTTP bind address (http transport only). |
@@ -299,55 +301,74 @@ notes.
 ## Session context
 
 A **session-context template** weaves the five foundational files
-(`PERSONA`/`PROMPT`/`RULES`/`USER`/`MEMORY`) together with operator prose and an
-auto-generated memory-tools guide into a single rendered bootstrap. It is an
-ordinary markdown document with `{{…}}` placeholders:
+(`PERSONA`/`PROMPT`/`RULES`/`USER`/`MEMORY`) together with operator prose into a
+single rendered bootstrap. It is an ordinary markdown document with `{{…}}`
+placeholders:
 
 - `{{files.persona}}`, `{{files.prompt}}`, `{{files.rules}}`, `{{files.user}}`, `{{files.memory}}` — the foundational file contents (a missing file renders a sentinel)
 - `{{scope.<key>}}` — a scope value (e.g. `{{scope.agent}}`); `<key>` is any scheme placeholder
-- `{{tools_guide}}` — the server-generated memory-tools guide (the live tool catalogue only)
+- `{{scope_directive}}` — the server-generated banner naming the active scope keys
+- `{{onboarding_directive}}` — empty unless foundational files are missing, then a directive to interview the user and commit them via `evolve_core_persona`
 
-The compiled-in default template orders the sections `PERSONA → RULES → MEMORY →
-USER → PROMPT → {{tools_guide}}` and embeds a *suggested* (non-enforced) memory
-layout plus the documented line caps. External-tool facts (camera, SSH, etc.)
-belong in `PROMPT.md`. Operators who supply their own template fully control and
-may override that guidance.
+The renderer produces two kinds, each with its own template family:
 
-The active template is resolved per request, first hit wins:
+- **Full context** (`AGENT_SESSION_CONTEXT.md`): orders the sections `PERSONA →
+  RULES → MEMORY → USER → PROMPT`, then the onboarding directive and a pointer to
+  the layout. For the model to pull its full operating context.
+- **Lean bootstrap** (`AGENT_SESSION_BOOTSTRAP.md`): scope banner + `PERSONA` +
+  `RULES` + onboarding directive + pointers to the full context and the layout —
+  small enough to fit a SessionStart byte budget.
 
-1. a per-scope `AGENT_SESSION_CONTEXT.md` inside the agents folder (suffix-resolved like any scoped file)
-2. the global file at `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` (default `<root>/AGENT_SESSION_CONTEXT.md`)
+The **layout** (vault structure, the core-files-vs-filesystem distinction, the
+path-addressing rule, and the documented line caps) lives in its own
+`AGENT_MEMORY_LAYOUT.md`, served on demand rather than embedded in every render.
+External-tool facts (camera, SSH, etc.) belong in `PROMPT.md`. Operators who
+supply their own templates fully control that prose.
+
+Each template is resolved per request, first hit wins (the bootstrap and layout
+follow the same layering with their own filenames and env vars):
+
+1. a per-scope file inside the agents folder (suffix-resolved like any scoped file)
+2. the global file at `AGENTMEM_SESSION_CONTEXT_TEMPLATE_FILE` / `AGENTMEM_SESSION_BOOTSTRAP_TEMPLATE_FILE` / `AGENTMEM_MEMORY_LAYOUT_TEMPLATE_FILE`
 3. a compiled-in default
 
 Nothing errors on absence — a fresh vault renders an instructions-only bootstrap.
-Unknown `{{…}}` tokens are left literal. The same rendered output is exposed
-through three MCP surfaces plus one plain-HTTP endpoint:
+Unknown `{{…}}` tokens are left literal. The renders are exposed through MCP
+resources/prompt/tool and plain-HTTP endpoints:
 
 | Surface | Shape | For |
 |---|---|---|
-| `load_session_context` tool | `{ rendered, missing }` | the model pulling its own context mid-session |
-| `session-context` resource | `agentmem://session-context/{…}` (params follow the scheme) | client auto-attach |
+| `load_session_context` tool | `{ rendered, missing }` (full context) | the model pulling its own context mid-session |
+| `session-context` resource | `agentmem://session-context/{…}` (full context) | client auto-attach |
+| `session-bootstrap` resource | `agentmem://session-bootstrap/{…}` (lean) | session-start injection |
+| `session-layout` resource | `agentmem://session-layout/{…}` (layout) | on-demand vault mechanics |
 | `session-context` prompt | required args follow the scheme | user slash-command |
-| `GET /v1/context` | `text/markdown` (or `{ rendered, missing }` JSON) | a harness/client fetching the system prompt without MCP |
+| `GET /v1/context` | `text/markdown` (or `{ rendered, missing }` JSON) | full context without MCP |
+| `GET /v1/bootstrap` | `text/markdown` (or JSON) | lean session-start hook without MCP |
+| `GET /v1/layout` | `text/markdown` (or JSON) | layout without MCP |
 
-### `GET /v1/context`
+### `GET /v1/context`, `/v1/bootstrap`, `/v1/layout`
 
-A versioned, stateless, read-only HTTP route (HTTP transport only) that renders
-the same bootstrap for a harness to fetch directly. Each VFS-scheme placeholder is
-a query parameter; the scope is bound in scheme order:
+Versioned, stateless, read-only HTTP routes (HTTP transport only). `/v1/context`
+renders the full context, `/v1/bootstrap` the lean bootstrap (the recommended
+SessionStart hook target), and `/v1/layout` the vault-mechanics guidance. Each
+VFS-scheme placeholder is a query parameter; the scope is bound in scheme order:
 
 ```sh
-# Markdown by default — drop straight into a system prompt.
-curl 'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony'
+# Lean bootstrap — markdown by default, drop straight into a system prompt.
+curl 'http://127.0.0.1:8000/v1/bootstrap?agent=jarvis&user=tony'
 
-# JSON ({ rendered, missing }) via content negotiation.
+# Full context as JSON ({ rendered, missing }) via content negotiation.
 curl -H 'Accept: application/json' \
   'http://127.0.0.1:8000/v1/context?agent=jarvis&user=tony'
+
+# Vault layout and conventions.
+curl 'http://127.0.0.1:8000/v1/layout?agent=jarvis&user=tony'
 ```
 
-Missing, empty, or unexpected scope parameters return `400` with a
-`{ "error": … }` body; absent foundational files are never errors. The route sits
-behind the same authentication gate as `/mcp` (add
+All three share one behavior: missing, empty, or unexpected scope parameters
+return `400` with a `{ "error": … }` body; absent foundational files are never
+errors. They sit behind the same authentication gate as `/mcp` (add
 `-H "Authorization: Bearer <token>"` when `AGENTMEM_HTTP_BEARER` or
 `AGENTMEM_HTTP_TOKENS_FILE` is configured); a scoped token requesting a scope
 outside its grant gets `403`. Only the `/healthz` and `/readyz` probes are
