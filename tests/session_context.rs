@@ -104,6 +104,49 @@ async fn resource_template_and_read_render_context() {
 }
 
 #[tokio::test]
+async fn bootstrap_and_layout_resources_render() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let service = serve(&tmp, "<agent>.<user>").await;
+
+    service
+        .call_tool(
+            CallToolRequestParams::new("evolve_core_persona").with_arguments(
+                json!({"agent":"jarvis","user":"tony","which":"persona","content":"PERSONA-BODY"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // The lean bootstrap resource renders persona + pointers, no heavier slots.
+    let boot = service
+        .read_resource(ReadResourceRequestParams::new(
+            "agentmem://session-bootstrap/jarvis/tony",
+        ))
+        .await
+        .unwrap();
+    let boot_text = resource_text(&boot);
+    assert!(boot_text.contains("PERSONA-BODY"));
+    assert!(boot_text.contains("load_session_context"));
+    assert!(!boot_text.contains("<MEMORY>"));
+
+    // The layout resource renders the vault-mechanics guidance.
+    let layout = service
+        .read_resource(ReadResourceRequestParams::new(
+            "agentmem://session-layout/jarvis/tony",
+        ))
+        .await
+        .unwrap();
+    let layout_text = resource_text(&layout);
+    assert!(layout_text.contains("# Memory Layout"));
+    assert!(layout_text.contains("ordinary filesystem"));
+
+    service.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn onboarding_directive_appears_for_a_fresh_scope() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let service = serve(&tmp, "<agent>.<user>").await;

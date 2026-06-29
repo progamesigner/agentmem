@@ -31,9 +31,9 @@
 ## 6. Tests
 
 - [x] 6.1 Update `src/session_context.rs` unit tests: drop the `tools_guide_*` and `<AGENTMEM:TOOLS>`/`<AGENTMEM:LAYOUT>` assertions; add tests for the two kinds, `{{onboarding_directive}}` gating, the layout renderer, and the layered resolution for the new template files.
-- [ ] 6.2 Update/add HTTP transport tests for `GET /v1/bootstrap` and `GET /v1/layout` (render, absent-files-ok, scope binding, negotiation, auth/scoped-token gating); assert `GET /v1/context` output no longer contains the tools guide or layout prose.
-- [ ] 6.3 Add MCP tests for the two new resources (templates list, read, empty-vault, scoped-token gating).
-- [ ] 6.4 Add config tests for the two new env vars (defaults, custom paths, absent-file fallback).
+- [x] 6.2 Update/add HTTP transport tests for `GET /v1/bootstrap` and `GET /v1/layout` (render, absent-files-ok, scope binding, negotiation, auth/scoped-token gating); assert `GET /v1/context` output no longer contains the tools guide or layout prose.
+- [x] 6.3 Add MCP tests for the two new resources (templates list, read, empty-vault, scoped-token gating).
+- [x] 6.4 Add config tests for the two new env vars (defaults, custom paths, absent-file fallback).
 
 ## 7. Docs and verification
 

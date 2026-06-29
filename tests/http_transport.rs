@@ -608,6 +608,94 @@ async fn context_endpoint_honours_bearer() {
     child.kill().await.unwrap();
 }
 
+#[tokio::test]
+async fn bootstrap_endpoint_renders_lean() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18681";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/v1/bootstrap?agent=jarvis&user=tony"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/markdown")
+    );
+    let body = resp.text().await.unwrap();
+    // Lean: scope banner, persona/rules slots, pointers; no heavier sections.
+    assert!(body.contains("# Session Context"));
+    assert!(body.contains("<PERSONA>"));
+    assert!(body.contains("load_session_context"));
+    assert!(body.contains("session-layout"));
+    assert!(!body.contains("<MEMORY>"));
+    assert!(!body.contains("<AGENTMEM:TOOLS>"));
+
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn layout_endpoint_renders_and_reuses_context_behavior() {
+    let tmp = assert_fs::TempDir::new().unwrap();
+    let bind = "127.0.0.1:18682";
+    let mut child = spawn(tmp.path(), Some(bind), None);
+    let base = format!("http://{bind}");
+    wait_health(&base).await;
+
+    let client = reqwest::Client::new();
+
+    // Renders the layout document as markdown.
+    let resp = client
+        .get(format!("{base}/v1/layout?agent=jarvis&user=tony"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("# Memory Layout"));
+    assert!(body.contains("ordinary filesystem"));
+    // Onboarding guidance is not part of the layout surface.
+    assert!(!body.contains("Onboarding needed"));
+
+    // Reuses the context endpoint's scope validation.
+    let resp = client
+        .get(format!("{base}/v1/layout?agent=jarvis"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 400);
+    let err: serde_json::Value = resp.json().await.unwrap();
+    assert!(err["error"].as_str().unwrap().contains("user"));
+
+    // JSON negotiation mirrors /v1/context, with an empty `missing`.
+    let resp = client
+        .get(format!("{base}/v1/layout?agent=jarvis&user=tony"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let json: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        json["rendered"]
+            .as_str()
+            .unwrap()
+            .contains("# Memory Layout")
+    );
+    assert_eq!(json["missing"].as_array().unwrap().len(), 0);
+
+    child.kill().await.unwrap();
+}
+
 // --- Scoped bearer tokens (AGENTMEM_HTTP_TOKENS_FILE) -----------------------
 
 #[tokio::test]
