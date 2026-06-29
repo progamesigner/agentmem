@@ -3497,6 +3497,43 @@ fn evolve_memory_over_cap_is_rejected_and_unchanged() {
 }
 
 #[test]
+fn evolve_rules_within_cap_succeeds() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let content = "line\n".repeat(40);
+    call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony","which":"rules","content":content}),
+    )
+    .unwrap();
+}
+
+#[test]
+fn evolve_rules_over_cap_is_rejected_and_unchanged() {
+    let tmp = TempDir::new().unwrap();
+    let tb = default_tb(&tmp);
+    let content = "line\n".repeat(41);
+    let res = call(
+        &tb,
+        "evolve_core_persona",
+        json!({"agent":"jarvis","user":"tony","which":"rules","content":content}),
+    );
+    match res {
+        Err(e) => {
+            assert_eq!(e.code().as_str(), "invalid_argument");
+            assert!(e.to_string().contains("40"), "message: {e}");
+        }
+        Ok(r) => panic!("expected error, got: {:?}", r.structured_content),
+    }
+    assert!(
+        !tmp.path()
+            .join("Agents/jarvis.tony/RULES.jarvis.tony.md")
+            .exists()
+    );
+}
+
+#[test]
 fn evolve_single_form_response_is_the_byte_count() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);
@@ -3559,26 +3596,26 @@ fn evolve_batch_writes_files_with_results_in_request_order() {
 fn evolve_batch_over_cap_entry_rejects_whole_batch_unchanged() {
     let tmp = TempDir::new().unwrap();
     let tb = default_tb(&tmp);
-    let over_cap = "line\n".repeat(101);
+    let over_cap = "line\n".repeat(41);
     let res = call(
         &tb,
         "evolve_core_persona",
         json!({"agent":"jarvis","user":"tony","updates":[
             {"which":"persona","content":"soul"},
-            {"which":"user","content":over_cap},
+            {"which":"rules","content":over_cap},
         ]}),
     );
     match res {
         Err(e) => {
             assert_eq!(e.code().as_str(), "invalid_argument");
-            assert!(e.to_string().contains("100"), "message: {e}");
+            assert!(e.to_string().contains("40"), "message: {e}");
         }
         Ok(r) => panic!("expected error, got: {:?}", r.structured_content),
     }
     // Neither file — including the valid persona entry — was created.
     for rel in [
         "Agents/jarvis.tony/PERSONA.jarvis.tony.md",
-        "Agents/jarvis.tony/USER.jarvis.tony.md",
+        "Agents/jarvis.tony/RULES.jarvis.tony.md",
     ] {
         assert!(!tmp.path().join(rel).exists(), "{rel} must not exist");
     }

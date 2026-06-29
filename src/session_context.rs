@@ -26,7 +26,7 @@ use crate::template::Template;
 pub enum RenderKind {
     /// The full session context (foundational files + onboarding + layout pointer).
     Context,
-    /// The lean session bootstrap (scope + persona + rules + onboarding + pointers).
+    /// The lean session bootstrap (scope + pointers + onboarding + rules).
     Bootstrap,
 }
 
@@ -84,25 +84,22 @@ const DEFAULT_CONTEXT: &str = "\
 > **Vault layout & conventions.** Read the `session-layout` resource (`agentmem://session-layout/…`) or `GET /v1/layout` before organizing memory. Writes that violate the line caps or the wrapper-only rules will error.
 ";
 
-/// The compiled-in default lean-bootstrap template: the scope banner, persona
-/// and rules, the onboarding directive, and pointers to the full context and the
-/// layout surface. It deliberately omits memory/user/prompt, the tools guide, and
-/// the layout prose to stay within a SessionStart byte budget.
+/// The compiled-in default lean-bootstrap template, ordered server-owned-content
+/// first: the `# Session Bootstrap` heading, the scope banner, a pointer to the
+/// full context and the layout surface, the onboarding directive, and finally the
+/// untagged `RULES.md` contents as the last (truncatable) content. It deliberately
+/// omits persona/memory/user/prompt, the wrapper tags, the tools guide, the layout
+/// prose, and any server-defined memory loop, to stay within a SessionStart byte
+/// budget; memory discipline is left to the user's own `RULES.md`/`PROMPT.md`.
 const DEFAULT_BOOTSTRAP: &str = "\
-# Session Context
+# Session Bootstrap
 
 {{scope_directive}}
 
-<PERSONA>
-{{files.persona}}
-</PERSONA>
-
-<RULES>
-{{files.rules}}
-</RULES>
+> **Lean bootstrap.** Call the `load_session_context` tool for the full context (persona, working memory, user profile, workflow prompt). Read the `session-layout` resource (`agentmem://session-layout/…`) or `GET /v1/layout` for vault structure and conventions; writes that violate the line caps or the wrapper-only rules will error.
 
 {{onboarding_directive}}
-> **Lean bootstrap.** Call the `load_session_context` tool for the full context (working memory, user profile, workflow prompt). Read the `session-layout` resource (`agentmem://session-layout/…`) or `GET /v1/layout` for vault structure and conventions; writes that violate the line caps or the wrapper-only rules will error.
+{{files.rules}}
 ";
 
 /// The compiled-in default layout content, served by the `session-layout`
@@ -529,7 +526,8 @@ mod tests {
     }
 
     /// The lean bootstrap render carries scope + persona + rules + pointers, and
-    /// omits the heavier foundational slots and the tools guide.
+    /// omits persona, the heavier foundational slots, the wrapper tags, and any
+    /// server-defined memory loop; rules render last and untagged.
     #[test]
     fn bootstrap_render_is_lean() {
         let tmp = TempDir::new().unwrap();
@@ -552,17 +550,25 @@ mod tests {
             RenderKind::Bootstrap,
         )
         .unwrap();
-        // Lean core present.
+        // Distinct heading and the server-owned lean core.
+        assert!(sc.rendered.contains("# Session Bootstrap"));
+        assert!(!sc.rendered.contains("# Session Context"));
         assert!(sc.rendered.contains("`agent=jarvis, user=tony`"));
-        assert!(sc.rendered.contains("PERSONA-BODY"));
-        assert!(sc.rendered.contains("RULES-BODY"));
         assert!(sc.rendered.contains("load_session_context"));
         assert!(sc.rendered.contains("session-layout"));
-        // Heavier sections omitted.
+        // Persona is dropped; rules are inlined untagged.
+        assert!(!sc.rendered.contains("PERSONA-BODY"));
+        assert!(sc.rendered.contains("RULES-BODY"));
+        // No wrapper tags, heavier sections, or tools guide.
+        assert!(!sc.rendered.contains("<PERSONA>"));
+        assert!(!sc.rendered.contains("<RULES>"));
         assert!(!sc.rendered.contains("<MEMORY>"));
         assert!(!sc.rendered.contains("<USER>"));
         assert!(!sc.rendered.contains("<PROMPT>"));
         assert!(!sc.rendered.contains("<AGENTMEM:TOOLS>"));
+        // Rules are the final content: nothing but trailing whitespace follows.
+        let rules_at = sc.rendered.find("RULES-BODY").unwrap();
+        assert!(sc.rendered[rules_at..].trim_end() == "RULES-BODY");
         // Same absent-files accounting as the full render.
         assert_eq!(
             sc.missing,
@@ -592,8 +598,10 @@ mod tests {
         assert!(!directive.contains('='));
     }
 
-    /// Both default templates lead with the bare scope banner: it appears after
-    /// the H1 and before `<PERSONA>`, not wrapped in any tag.
+    /// Both default templates lead with the bare scope banner directly under the
+    /// H1 (no enclosing tag). The context render then opens `<PERSONA>` under
+    /// `# Session Context`; the bootstrap render uses its distinct
+    /// `# Session Bootstrap` heading and carries no wrapper tags at all.
     #[test]
     fn default_templates_lead_with_bare_scope_banner() {
         let tmp = TempDir::new().unwrap();
@@ -608,11 +616,24 @@ mod tests {
             )
             .unwrap();
             let banner = sc.rendered.find("Active memory scope").unwrap();
-            let h1 = sc.rendered.find("# Session Context").unwrap();
-            let persona = sc.rendered.find("<PERSONA>").unwrap();
-            assert!(h1 < banner && banner < persona);
             assert!(sc.rendered.contains("`agent=jarvis, user=tony`"));
-            assert!(!sc.rendered[h1..persona].contains('<'));
+            match kind {
+                RenderKind::Context => {
+                    let h1 = sc.rendered.find("# Session Context").unwrap();
+                    let persona = sc.rendered.find("<PERSONA>").unwrap();
+                    assert!(h1 < banner && banner < persona);
+                    // Bare banner: no tag between the H1 and the first slot.
+                    assert!(!sc.rendered[h1..persona].contains('<'));
+                }
+                RenderKind::Bootstrap => {
+                    let h1 = sc.rendered.find("# Session Bootstrap").unwrap();
+                    assert!(h1 < banner);
+                    // No persona slot or wrapper tags anywhere in the bootstrap,
+                    // and the banner sits bare directly under the H1.
+                    assert!(!sc.rendered.contains("<PERSONA>"));
+                    assert!(!sc.rendered[h1..banner].contains('<'));
+                }
+            }
         }
     }
 

@@ -141,7 +141,7 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
     }
   },
   "evolve_core_persona": {
-    "description": "Atomically replace foundational session files (persona|prompt|rules|user|memory): a single file via `which` + `content`, or several in one call via an `updates` array of 1–5 { which, content } entries (no duplicate `which`), validated as a unit before any write — supply exactly one form. When bootstrapping missing foundational files, interview the user first (identity, role, working style, boundaries), distill the answers into your own concise wording, then commit all affected files in one batch call. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
+    "description": "Atomically replace foundational session files (persona|prompt|rules|user|memory): a single file via `which` + `content`, or several in one call via an `updates` array of 1–5 { which, content } entries (no duplicate `which`), validated as a unit before any write — supply exactly one form. When bootstrapping missing foundational files, interview the user first (identity, role, working style, boundaries), distill the answers into your own concise wording, then commit all affected files in one batch call. Enforces caps: RULES.md ≤ 40 lines, USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -151,7 +151,7 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
           "type": "string"
         },
         "content": {
-          "description": "Single form: the full new contents of the selected file. `user` content\nmust be ≤ 100 lines and `memory` content ≤ 200 lines.",
+          "description": "Single form: the full new contents of the selected file. `rules` content\nmust be ≤ 40 lines, `user` content ≤ 100 lines, and `memory` content\n≤ 200 lines.",
           "type": [
             "string",
             "null"
@@ -173,7 +173,7 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
             "description": "One batch `evolve_core_persona` entry: a foundational file and its full new\ncontents, with the same per-entry semantics as the single form.",
             "properties": {
               "content": {
-                "description": "The full new contents of the selected file. `user` content must be ≤ 100\nlines and `memory` content ≤ 200 lines.",
+                "description": "The full new contents of the selected file. `rules` content must be ≤ 40\nlines, `user` content ≤ 100 lines, and `memory` content ≤ 200 lines.",
                 "type": "string"
               },
               "which": {
@@ -315,7 +315,7 @@ expression: "schemas_for(\"<team>.<agent>.<env>.<user>\")"
     }
   },
   "load_session_context": {
-    "description": "Render the session-context for the active scope: the foundational files woven into the configured template with a memory-tools guide. Returns { rendered, missing }.",
+    "description": "Render the full session-context for the active scope: the five foundational files (persona, prompt, rules, user, memory) woven into the configured template, plus a pointer to the layout surface. Returns { rendered, missing }.",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

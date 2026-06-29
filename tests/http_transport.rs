@@ -632,9 +632,12 @@ async fn bootstrap_endpoint_renders_lean() {
             .starts_with("text/markdown")
     );
     let body = resp.text().await.unwrap();
-    // Lean: scope banner, persona/rules slots, pointers; no heavier sections.
-    assert!(body.contains("# Session Context"));
-    assert!(body.contains("<PERSONA>"));
+    // Lean: distinct heading, scope banner, load_session_context + layout
+    // pointers; no persona, no wrapper tags, no heavier sections.
+    assert!(body.contains("# Session Bootstrap"));
+    assert!(!body.contains("# Session Context"));
+    assert!(!body.contains("<PERSONA>"));
+    assert!(!body.contains("<RULES>"));
     assert!(body.contains("load_session_context"));
     assert!(body.contains("session-layout"));
     assert!(!body.contains("<MEMORY>"));

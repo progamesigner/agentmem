@@ -1,13 +1,15 @@
 # Loading session context at session start
 
-This guide wires the `GET /v1/bootstrap` endpoint (see [Session context](../README.md#session-context)) into the session-start mechanism of common agent clients, so every new session is bootstrapped with the scope's lean persona/rules automatically — no manual tool call.
+This guide wires the `GET /v1/bootstrap` endpoint (see [Session context](../README.md#session-context)) into the session-start mechanism of common agent clients, so every new session is bootstrapped with the scope's lean rules automatically — no manual tool call.
 
 > **HTTP transport only.** `GET /v1/bootstrap` is a plain HTTP route served by the HTTP transport. In stdio mode there is no HTTP listener and these hooks cannot reach it. Start the server with the default `--transport http` (or `AGENTMEM_TRANSPORT=http`), bound to `127.0.0.1:8000` by default.
 
 > **Which endpoint?** Three render endpoints share the same scope binding, auth, and negotiation:
-> - **`/v1/bootstrap`** — the **lean** bootstrap (scope + persona + rules + pointers). The recommended SessionStart payload: small enough to survive a harness's byte budget, and it tells the agent to pull the rest on demand.
-> - **`/v1/context`** — the **full** context (adds memory, user profile, workflow prompt). What `load_session_context` returns; fetch it when you want everything injected up front.
+> - **`/v1/bootstrap`** — the **lean** bootstrap, ordered server-owned-content first: a `# Session Bootstrap` heading, the scope banner, a pointer to the full context and the layout, then the scope's `RULES.md` last. The recommended SessionStart payload: small enough to survive a harness's byte budget, and it tells the agent to pull the rest (persona, memory, user profile, workflow prompt) on demand. It imposes no memory loop — recall/diary discipline is whatever your `RULES.md`/`PROMPT.md` define.
+> - **`/v1/context`** — the **full** context (adds persona, memory, user profile, workflow prompt). What `load_session_context` returns; fetch it when you want everything injected up front.
 > - **`/v1/layout`** — the vault structure and conventions, on demand.
+>
+> Because `RULES.md` is inlined here, it is capped at **40 lines** (enforced on `evolve_core_persona` writes) so the bootstrap stays within the SessionStart budget; `USER.md` (≤ 100) and `MEMORY.md` (≤ 200) are not in the bootstrap.
 
 ## The building block
 

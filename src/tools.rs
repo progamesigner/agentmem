@@ -285,8 +285,8 @@ enum Which {
 struct EvolveUpdateEntry {
     /// Which foundational file to replace: one of persona, prompt, rules, user, memory.
     which: Which,
-    /// The full new contents of the selected file. `user` content must be ≤ 100
-    /// lines and `memory` content ≤ 200 lines.
+    /// The full new contents of the selected file. `rules` content must be ≤ 40
+    /// lines, `user` content ≤ 100 lines, and `memory` content ≤ 200 lines.
     content: String,
 }
 
@@ -298,8 +298,9 @@ struct EvolveFields {
     /// (`which` + `content`) or the batch form (`updates`) must be supplied;
     /// neither or both is rejected.
     which: Option<Which>,
-    /// Single form: the full new contents of the selected file. `user` content
-    /// must be ≤ 100 lines and `memory` content ≤ 200 lines.
+    /// Single form: the full new contents of the selected file. `rules` content
+    /// must be ≤ 40 lines, `user` content ≤ 100 lines, and `memory` content
+    /// ≤ 200 lines.
     content: Option<String>,
     /// Batch form: 1 to 5 `{ which, content }` entries, each with the same
     /// semantics as the single form; duplicate `which` values are rejected.
@@ -1965,7 +1966,7 @@ fn evolve_target(which: &str) -> Result<(&'static str, Option<usize>), AgentmemE
     match which {
         "persona" => Ok(("PERSONA.md", None)),
         "prompt" => Ok(("PROMPT.md", None)),
-        "rules" => Ok(("RULES.md", None)),
+        "rules" => Ok(("RULES.md", Some(40))),
         "user" => Ok(("USER.md", Some(100))),
         "memory" => Ok(("MEMORY.md", Some(200))),
         other => Err(AgentmemError::InvalidArgument {
@@ -2130,12 +2131,12 @@ fn build_tools(scheme: &Scheme, recall_enabled: bool) -> Vec<Tool> {
         ),
         tool(
             "load_session_context",
-            "Render the session-context for the active scope: the foundational files woven into the configured template with a memory-tools guide. Returns { rendered, missing }.",
+            "Render the full session-context for the active scope: the five foundational files (persona, prompt, rules, user, memory) woven into the configured template, plus a pointer to the layout surface. Returns { rendered, missing }.",
             merge_schema(scheme, fields_schema::<EmptyFields>()),
         ),
         tool(
             "evolve_core_persona",
-            "Atomically replace foundational session files (persona|prompt|rules|user|memory): a single file via `which` + `content`, or several in one call via an `updates` array of 1–5 { which, content } entries (no duplicate `which`), validated as a unit before any write — supply exactly one form. When bootstrapping missing foundational files, interview the user first (identity, role, working style, boundaries), distill the answers into your own concise wording, then commit all affected files in one batch call. Enforces caps: USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
+            "Atomically replace foundational session files (persona|prompt|rules|user|memory): a single file via `which` + `content`, or several in one call via an `updates` array of 1–5 { which, content } entries (no duplicate `which`), validated as a unit before any write — supply exactly one form. When bootstrapping missing foundational files, interview the user first (identity, role, working style, boundaries), distill the answers into your own concise wording, then commit all affected files in one batch call. Enforces caps: RULES.md ≤ 40 lines, USER.md ≤ 100 lines, MEMORY.md ≤ 200 lines.",
             merge_schema(scheme, fields_schema::<EvolveFields>()),
         ),
         tool(

@@ -111,7 +111,7 @@ async fn bootstrap_and_layout_resources_render() {
     service
         .call_tool(
             CallToolRequestParams::new("evolve_core_persona").with_arguments(
-                json!({"agent":"jarvis","user":"tony","which":"persona","content":"PERSONA-BODY"})
+                json!({"agent":"jarvis","user":"tony","which":"rules","content":"RULES-BODY"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -120,7 +120,8 @@ async fn bootstrap_and_layout_resources_render() {
         .await
         .unwrap();
 
-    // The lean bootstrap resource renders persona + pointers, no heavier slots.
+    // The lean bootstrap resource renders the scope banner, pointers, and the
+    // untagged rules — no persona, no heavier slots, no wrapper tags.
     let boot = service
         .read_resource(ReadResourceRequestParams::new(
             "agentmem://session-bootstrap/jarvis/tony",
@@ -128,8 +129,11 @@ async fn bootstrap_and_layout_resources_render() {
         .await
         .unwrap();
     let boot_text = resource_text(&boot);
-    assert!(boot_text.contains("PERSONA-BODY"));
+    assert!(boot_text.contains("# Session Bootstrap"));
+    assert!(boot_text.contains("RULES-BODY"));
     assert!(boot_text.contains("load_session_context"));
+    assert!(!boot_text.contains("<PERSONA>"));
+    assert!(!boot_text.contains("<RULES>"));
     assert!(!boot_text.contains("<MEMORY>"));
 
     // The layout resource renders the vault-mechanics guidance.
