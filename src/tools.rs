@@ -394,8 +394,12 @@ pub struct Toolbox {
     policy: Policy,
     timezone: Tz,
     tools: Vec<Tool>,
-    /// Absolute path to the global session-context template file (may not exist).
+    /// Absolute path to the global session-context (full) template file (may not exist).
     session_context_template_file: PathBuf,
+    /// Absolute path to the global session-bootstrap (lean) template file (may not exist).
+    session_bootstrap_template_file: PathBuf,
+    /// Absolute path to the global memory-layout template file (may not exist).
+    memory_layout_template_file: PathBuf,
     /// The recall engine, present unless `AGENTMEM_RECALL_BACKEND=off`.
     recall: Option<Arc<RecallEngine>>,
 }
@@ -409,6 +413,8 @@ impl Toolbox {
         policy: Policy,
         timezone: Tz,
         session_context_template_file: PathBuf,
+        session_bootstrap_template_file: PathBuf,
+        memory_layout_template_file: PathBuf,
         recall: Option<Arc<RecallEngine>>,
     ) -> Toolbox {
         let scheme = storage.resolver().scheme().clone();
@@ -419,6 +425,8 @@ impl Toolbox {
             timezone,
             tools,
             session_context_template_file,
+            session_bootstrap_template_file,
+            memory_layout_template_file,
             recall,
         }
     }
@@ -579,8 +587,10 @@ impl Toolbox {
             .collect()
     }
 
-    /// Render the session-context for a pre-built scope map (used by the resource
-    /// and prompt surfaces and `GET /v1/context`). Validates that `scope` contains
+    /// Render the session-context for a pre-built scope map (used by the
+    /// `session-context`/`session-bootstrap` resources, the `session-context`
+    /// prompt, and `GET /v1/context`/`GET /v1/bootstrap`). `kind` selects the
+    /// full `Context` or lean `Bootstrap` render. Validates that `scope` contains
     /// exactly the scheme's placeholder keys, then checks it against the
     /// per-request `grant`, before rendering — an unauthorized scope is rejected
     /// with `scope_denied` before any file IO.
@@ -588,7 +598,40 @@ impl Toolbox {
         &self,
         scope: &BTreeMap<String, String>,
         grant: &Grant,
+        kind: crate::session_context::RenderKind,
     ) -> Result<crate::session_context::SessionContext, AgentmemError> {
+        self.check_render_scope(scope, grant)?;
+        let template_file = match kind {
+            crate::session_context::RenderKind::Context => &self.session_context_template_file,
+            crate::session_context::RenderKind::Bootstrap => &self.session_bootstrap_template_file,
+        };
+        crate::session_context::render_session_context(&self.storage, template_file, scope, kind)
+    }
+
+    /// Render the layout document for a pre-built scope map (used by the
+    /// `session-layout` resource and `GET /v1/layout`). Validates and grant-checks
+    /// the scope as `render_session_context` does before rendering.
+    pub fn render_layout(
+        &self,
+        scope: &BTreeMap<String, String>,
+        grant: &Grant,
+    ) -> Result<String, AgentmemError> {
+        self.check_render_scope(scope, grant)?;
+        crate::session_context::render_layout(
+            &self.storage,
+            &self.memory_layout_template_file,
+            scope,
+        )
+    }
+
+    /// Validate that `scope` carries exactly the scheme's placeholder keys
+    /// (non-empty) and is within the per-request `grant`. Shared by the render
+    /// surfaces, which reject an unauthorized scope before any file IO.
+    fn check_render_scope(
+        &self,
+        scope: &BTreeMap<String, String>,
+        grant: &Grant,
+    ) -> Result<(), AgentmemError> {
         let placeholders = self.scheme().placeholders();
         for ph in &placeholders {
             match scope.get(*ph) {
@@ -613,12 +656,7 @@ impl Toolbox {
             }
         }
         grant.check(&placeholders, scope)?;
-        crate::session_context::render_session_context(
-            &self.storage,
-            &self.session_context_template_file,
-            &self.tools,
-            scope,
-        )
+        Ok(())
     }
 
     /// The clean virtual path of a conventional file relative to the agents
@@ -1360,13 +1398,14 @@ impl Toolbox {
     }
 
     fn load_session_context(&self, args: &JsonObject) -> Result<CallToolResult, AgentmemError> {
-        // Accept only scope parameters (no `path`/`which`).
+        // Accept only scope parameters (no `path`/`which`). Always the full
+        // context render; the scope grant is enforced at the call dispatch.
         let scope = self.scope_map(args, &[])?;
         let sc = crate::session_context::render_session_context(
             &self.storage,
             &self.session_context_template_file,
-            &self.tools,
             &scope,
+            crate::session_context::RenderKind::Context,
         )?;
         Ok(ok_json(
             json!({ "rendered": sc.rendered, "missing": sc.missing }),

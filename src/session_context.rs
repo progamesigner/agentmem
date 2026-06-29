@@ -1,23 +1,34 @@
 //! The session-context renderer: the single source of the rendered bootstrap
-//! shared by the `load_session_context` tool, the `session-context` resource, and
-//! the `session-context` prompt.
+//! shared by the `load_session_context` tool, the `session-context`/
+//! `session-bootstrap` resources, the `session-context` prompt, and the
+//! `GET /v1/context` and `GET /v1/bootstrap` HTTP endpoints. A companion layout
+//! renderer backs the `session-layout` resource and `GET /v1/layout`.
 //!
-//! It resolves the active session-context **template** through a layered lookup
-//! (per-scope file → global file → compiled-in default), builds a context map
+//! [`render_session_context`] resolves a **template** through a layered lookup
+//! (per-scope file → global file → compiled-in default), keyed by the
+//! [`RenderKind`] (full `Context` vs lean `Bootstrap`), builds a context map
 //! from the five foundational files (substituting a sentinel for any that are
-//! absent), the scope keys, and a server-generated tools guide, and renders the
+//! absent), the scope keys, a scope directive, and an onboarding directive that
+//! is non-empty only when foundational files are missing, then renders the
 //! template via [`crate::template::Template`]. It never errors on absence — a
 //! fresh vault renders instructions-only.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rmcp::model::Tool;
-
 use crate::error::AgentmemError;
 use crate::path::VirtualPath;
 use crate::storage::Storage;
 use crate::template::Template;
+
+/// Which render to produce: the full session context or the lean bootstrap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderKind {
+    /// The full session context (foundational files + onboarding + layout pointer).
+    Context,
+    /// The lean session bootstrap (scope + persona + rules + onboarding + pointers).
+    Bootstrap,
+}
 
 /// The five foundational files, paired as (placeholder leaf, filename). The
 /// context key is `files.<leaf>`.
@@ -29,17 +40,22 @@ pub const FOUNDATIONAL: &[(&str, &str)] = &[
     ("memory", "MEMORY.md"),
 ];
 
-/// The per-scope template filename, resolved through the scope suffix mechanism
-/// inside the agents folder.
-const PER_SCOPE_FILE: &str = "AGENT_SESSION_CONTEXT.md";
+/// The per-scope full-context template filename, resolved through the scope
+/// suffix mechanism inside the agents folder.
+const PER_SCOPE_CONTEXT_FILE: &str = "AGENT_SESSION_CONTEXT.md";
+/// The per-scope lean-bootstrap template filename.
+const PER_SCOPE_BOOTSTRAP_FILE: &str = "AGENT_SESSION_BOOTSTRAP.md";
+/// The per-scope layout template filename.
+const PER_SCOPE_LAYOUT_FILE: &str = "AGENT_MEMORY_LAYOUT.md";
 
 /// Substituted for a `{{files.*}}` placeholder whose file does not exist.
 const MISSING_SENTINEL: &str = "(not yet recorded — set via evolve_core_persona)";
 
-/// The compiled-in default template, used when no per-scope or global template
-/// file exists. Self-contained: a slot for each foundational file plus the
-/// server-generated tools guide.
-const DEFAULT_TEMPLATE: &str = "\
+/// The compiled-in default full-context template. Self-contained: the scope
+/// banner, a slot for each foundational file, the onboarding directive (empty in
+/// steady state), and a pointer to the layout surface. The tools guide and the
+/// layout prose are no longer embedded here.
+const DEFAULT_CONTEXT: &str = "\
 # Session Context
 
 {{scope_directive}}
@@ -64,11 +80,38 @@ const DEFAULT_TEMPLATE: &str = "\
 {{files.prompt}}
 </PROMPT>
 
-<AGENTMEM:TOOLS>
-{{tools_guide}}
-</AGENTMEM:TOOLS>
+{{onboarding_directive}}
+> **Vault layout & conventions.** Read the `session-layout` resource (`agentmem://session-layout/…`) or `GET /v1/layout` before organizing memory. Writes that violate the line caps or the wrapper-only rules will error.
+";
 
-<AGENTMEM:LAYOUT>
+/// The compiled-in default lean-bootstrap template: the scope banner, persona
+/// and rules, the onboarding directive, and pointers to the full context and the
+/// layout surface. It deliberately omits memory/user/prompt, the tools guide, and
+/// the layout prose to stay within a SessionStart byte budget.
+const DEFAULT_BOOTSTRAP: &str = "\
+# Session Context
+
+{{scope_directive}}
+
+<PERSONA>
+{{files.persona}}
+</PERSONA>
+
+<RULES>
+{{files.rules}}
+</RULES>
+
+{{onboarding_directive}}
+> **Lean bootstrap.** Call the `load_session_context` tool for the full context (working memory, user profile, workflow prompt). Read the `session-layout` resource (`agentmem://session-layout/…`) or `GET /v1/layout` for vault structure and conventions; writes that violate the line caps or the wrapper-only rules will error.
+";
+
+/// The compiled-in default layout content, served by the `session-layout`
+/// resource and `GET /v1/layout`. It carries the vault-mechanics guidance
+/// formerly embedded in the session-context `<AGENTMEM:LAYOUT>` section, minus
+/// the missing-files onboarding paragraph (now the `{{onboarding_directive}}`).
+const DEFAULT_LAYOUT: &str = "\
+# Memory Layout
+
 The following layout is a suggestion, not a rule. The server enforces only two
 things: core files are wrapper-only (see below) and the line caps on `USER.md`
 and `MEMORY.md`. Everything else here is guidance you may adapt.
@@ -115,16 +158,7 @@ How the managed files are written:
   `write_memory_note`/`edit_memory_note`/`delete_memory_note` may only target
   paths under a subfolder; root-level core files are reserved for the wrappers.
 
-Bootstrapping: when foundational files are missing (their sections above read
-\"(not yet recorded …)\"), interview the user first — ask as many questions as
-you need to understand identity, role, working style, and boundaries — before
-writing anything. Then distill the answers into your own concise wording,
-written for fast comprehension by future agent sessions, not a verbatim
-transcript of the user's words, and commit all affected files in one
-`evolve_core_persona` call with multiple `updates`.
-
 Line caps (enforced on tool writes): `USER.md` ≤ 100 lines, `MEMORY.md` ≤ 200 lines.
-</AGENTMEM:LAYOUT>
 ";
 
 /// The rendered session-context plus the foundational files that were absent.
@@ -138,13 +172,13 @@ pub struct SessionContext {
 ///
 /// `scope` must contain exactly the scheme's placeholder keys (the caller
 /// validates this). `global_template_file` is the configured global template
-/// path (may not exist). `tools` is the live tool catalogue, used for the
-/// `{{tools_guide}}` slot.
+/// path for the requested `kind` (may not exist). `kind` selects the full
+/// `Context` render or the lean `Bootstrap` render.
 pub fn render_session_context(
     storage: &Storage,
     global_template_file: &Path,
-    tools: &[Tool],
     scope: &BTreeMap<String, String>,
+    kind: RenderKind,
 ) -> Result<SessionContext, AgentmemError> {
     let resolver = storage.resolver();
     let rendered_scope =
@@ -186,15 +220,29 @@ pub fn render_session_context(
         context.insert(format!("scope.{k}"), v.clone());
     }
 
-    // Server-generated tools guide, carrying the concrete active scope.
-    context.insert("tools_guide".to_string(), tools_guide(tools, scope));
-
     // Prominent scope banner for the top of the document, so the active scope
     // keys survive truncation and tag-stripping by a consuming harness.
     context.insert("scope_directive".to_string(), scope_directive(scope));
 
-    // --- resolve the template source (layered) and render ---
-    let source = resolve_template_source(storage, &rendered_scope, global_template_file)?;
+    // Onboarding directive: empty in steady state, non-empty when a foundational
+    // file is absent — so a fresh/partial scope is prompted to record them.
+    context.insert(
+        "onboarding_directive".to_string(),
+        onboarding_directive(&missing),
+    );
+
+    // --- resolve the template source (layered, by kind) and render ---
+    let (per_scope_file, default_template) = match kind {
+        RenderKind::Context => (PER_SCOPE_CONTEXT_FILE, DEFAULT_CONTEXT),
+        RenderKind::Bootstrap => (PER_SCOPE_BOOTSTRAP_FILE, DEFAULT_BOOTSTRAP),
+    };
+    let source = resolve_template_source(
+        storage,
+        &rendered_scope,
+        per_scope_file,
+        global_template_file,
+        default_template,
+    )?;
     let rendered = Template::parse(&source).render(&context);
     if !rendered.unknown.is_empty() {
         tracing::warn!(
@@ -209,15 +257,57 @@ pub fn render_session_context(
     })
 }
 
-/// Resolve the active template source: per-scope file → global file → default.
+/// Render the layout document for a validated scope map. Resolves the layout
+/// template (per-scope → global → compiled-in default) and substitutes any
+/// `{{scope.<key>}}` placeholders an operator override may use; the compiled-in
+/// default contains none. Never errors on absence.
+pub fn render_layout(
+    storage: &Storage,
+    global_layout_file: &Path,
+    scope: &BTreeMap<String, String>,
+) -> Result<String, AgentmemError> {
+    let resolver = storage.resolver();
+    let rendered_scope =
+        resolver
+            .scheme()
+            .render(scope)
+            .map_err(|e| AgentmemError::InvalidArgument {
+                message: e.to_string(),
+            })?;
+
+    let mut context: BTreeMap<String, String> = BTreeMap::new();
+    for (k, v) in scope {
+        context.insert(format!("scope.{k}"), v.clone());
+    }
+
+    let source = resolve_template_source(
+        storage,
+        &rendered_scope,
+        PER_SCOPE_LAYOUT_FILE,
+        global_layout_file,
+        DEFAULT_LAYOUT,
+    )?;
+    let rendered = Template::parse(&source).render(&context);
+    if !rendered.unknown.is_empty() {
+        tracing::warn!(
+            unknown = ?rendered.unknown,
+            "layout template referenced unrecognised placeholder(s); left literal"
+        );
+    }
+    Ok(rendered.text)
+}
+
+/// Resolve a template source: per-scope file → global file → compiled default.
 /// Absence at any layer is non-fatal; genuine IO errors propagate.
 fn resolve_template_source(
     storage: &Storage,
     rendered_scope: &str,
+    per_scope_file: &str,
     global_template_file: &Path,
+    default_template: &str,
 ) -> Result<String, AgentmemError> {
     // (1) per-scope file, via the scope suffix mechanism inside the agents folder.
-    let vpath = agents_vpath(storage, PER_SCOPE_FILE)?;
+    let vpath = agents_vpath(storage, per_scope_file)?;
     let physical = storage.resolver().resolve(rendered_scope, &vpath)?;
     match storage.read(&physical) {
         Ok(content) => return Ok(content),
@@ -233,7 +323,7 @@ fn resolve_template_source(
     }
 
     // (3) compiled-in default.
-    Ok(DEFAULT_TEMPLATE.to_string())
+    Ok(default_template.to_string())
 }
 
 /// The clean virtual path of a conventional file relative to the agents folder
@@ -251,8 +341,7 @@ fn agents_vpath(storage: &Storage, relative: &str) -> Result<VirtualPath, Agentm
 
 /// Join the active scope into a deterministic `key=value, …` string, or `None`
 /// for an empty scope. The single source of truth for how `{{scope_directive}}`
-/// and `{{tools_guide}}` name the scope, so the two can never drift in
-/// formatting or ordering (the `BTreeMap` already yields sorted key order).
+/// names the scope (the `BTreeMap` already yields sorted key order).
 fn scope_keys_csv(scope: &BTreeMap<String, String>) -> Option<String> {
     if scope.is_empty() {
         return None;
@@ -284,24 +373,22 @@ fn scope_directive(scope: &BTreeMap<String, String>) -> String {
     }
 }
 
-/// Build the memory-tools guide from the live tool catalogue, naming the
-/// concrete active scope so the agent knows exactly which keys/values to carry
-/// on every call (e.g. `agent=jarvis, user=tony`).
-fn tools_guide(tools: &[Tool], scope: &BTreeMap<String, String>) -> String {
-    let mut out = match scope_keys_csv(scope) {
-        None => String::from(
-            "These memory tools are available. Every call must carry the scope keys \
-             defined by the server's VFS scheme.\n\n",
-        ),
-        Some(keys) => format!(
-            "These memory tools are available. Every call must carry these scope keys: {keys}.\n\n"
-        ),
-    };
-    for tool in tools {
-        let desc = tool.description.as_deref().unwrap_or("");
-        out.push_str(&format!("- `{}`: {}\n", tool.name, desc));
+/// Build the onboarding directive for the `{{onboarding_directive}}` slot. The
+/// empty string when every foundational file exists; otherwise a directive
+/// naming the absent files and instructing the agent to interview the user and
+/// commit them via `evolve_core_persona`.
+fn onboarding_directive(missing: &[String]) -> String {
+    if missing.is_empty() {
+        return String::new();
     }
-    out
+    format!(
+        "> **Onboarding needed — these foundational files are not yet recorded: {}.** \
+         Interview the user about identity, role, working style, and boundaries, then commit \
+         them in a single `evolve_core_persona` call (the `updates` batch form). Distill the \
+         answers into concise wording for fast comprehension by future sessions, not a verbatim \
+         transcript. Do this before substantive work.",
+        missing.join(", ")
+    )
 }
 
 #[cfg(test)]
@@ -334,8 +421,8 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
-    /// No files, no template → compiled-in default with all sentinels; all five
-    /// foundational files reported missing.
+    /// No files, no template → compiled-in default context with all sentinels;
+    /// all five foundational files reported missing.
     #[test]
     fn empty_vault_renders_default_with_sentinels() {
         let tmp = TempDir::new().unwrap();
@@ -344,8 +431,8 @@ mod tests {
         let sc = render_session_context(
             &storage,
             &global,
-            &[],
             &scope(&[("agent", "c"), ("user", "a")]),
+            RenderKind::Context,
         )
         .unwrap();
         assert!(sc.rendered.contains(MISSING_SENTINEL));
@@ -365,8 +452,8 @@ mod tests {
         let sc = render_session_context(
             &storage,
             &global,
-            &[],
             &scope(&[("agent", "c"), ("user", "a")]),
+            RenderKind::Context,
         )
         .unwrap();
         assert!(sc.rendered.contains("PERSONA-BODY"));
@@ -382,85 +469,109 @@ mod tests {
         );
     }
 
-    /// The compiled-in default template documents the suggested layout, the
-    /// tool-managed files, and the line caps.
+    /// The default context render no longer embeds the tools guide or the layout
+    /// prose; it delimits the five foundational slots in order and points to the
+    /// layout surface.
     #[test]
-    fn default_template_documents_conventions_and_caps() {
+    fn context_default_drops_tools_guide_and_layout() {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
         let global = tmp.path().join("AGENT_SESSION_CONTEXT.md");
         let sc = render_session_context(
             &storage,
             &global,
-            &[],
             &scope(&[("agent", "c"), ("user", "a")]),
+            RenderKind::Context,
         )
         .unwrap();
-        // Sections are delimited by tags, not H2 headings.
-        assert!(sc.rendered.contains("<PERSONA>"));
-        assert!(sc.rendered.contains("<AGENTMEM:TOOLS>"));
-        assert!(sc.rendered.contains("<AGENTMEM:LAYOUT>"));
-        // Suggested layout with key entries and their roles.
-        assert!(sc.rendered.contains("HEARTBEAT.md"));
-        assert!(sc.rendered.contains("diary/<YYYY-MM-DD>.md"));
-        assert!(sc.rendered.contains("agents/<subagent>/PROMPT.md"));
-        // Tool-managed files.
-        assert!(sc.rendered.contains("append_diary_entry"));
-        assert!(sc.rendered.contains("update_task_heartbeat"));
-        assert!(sc.rendered.contains("evolve_core_persona"));
-        // Documented caps.
-        assert!(sc.rendered.contains("USER.md` ≤ 100 lines"));
-        assert!(sc.rendered.contains("MEMORY.md` ≤ 200 lines"));
-        // Path-addressing rule for the generic tools, with a worked example.
-        assert!(sc.rendered.contains("relative to the agents folder"));
-        assert!(sc.rendered.contains("prepend your agents-folder name"));
-        assert!(sc.rendered.contains("Agents/topics/<topic>/<fact>.md"));
-        // The internal per-scope suffix mechanism is not exposed to the agent;
-        // the layout instead frames core files vs. an ordinary filesystem.
-        assert!(!sc.rendered.contains("suffix"));
-        assert!(sc.rendered.contains("ordinary filesystem"));
+        // Foundational slots in order.
+        let persona = sc.rendered.find("<PERSONA>").unwrap();
+        let rules = sc.rendered.find("<RULES>").unwrap();
+        let memory = sc.rendered.find("<MEMORY>").unwrap();
+        let user = sc.rendered.find("<USER>").unwrap();
+        let prompt = sc.rendered.find("<PROMPT>").unwrap();
+        assert!(persona < rules && rules < memory && memory < user && user < prompt);
+        // No tools guide, no embedded layout prose.
+        assert!(!sc.rendered.contains("<AGENTMEM:TOOLS>"));
+        assert!(!sc.rendered.contains("ordinary filesystem"));
+        assert!(!sc.rendered.contains("Line caps (enforced"));
+        // A pointer to the layout surface is present.
+        assert!(sc.rendered.contains("session-layout"));
     }
 
-    /// The tools guide names the concrete active scope keys/values so the agent
-    /// knows what to carry on every call.
+    /// `{{onboarding_directive}}` is empty when every foundational file exists,
+    /// and present (naming an absent file) otherwise — in both kinds.
     #[test]
-    fn tools_guide_carries_concrete_scope_keys() {
+    fn onboarding_directive_gated_on_missing() {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
         let global = tmp.path().join("missing.md");
-        let tool = Tool::new(
-            "list_memory_notes",
-            "List the virtual paths.",
-            std::sync::Arc::new(serde_json::Map::new()),
+        let s = scope(&[("agent", "c"), ("user", "a")]);
+
+        // All five present → no onboarding directive, empty `missing`.
+        for (_, filename) in FOUNDATIONAL {
+            let stem = filename.strip_suffix(".md").unwrap();
+            write(&tmp, &format!("Agents/c.a/{stem}.c.a.md"), "BODY");
+        }
+        for kind in [RenderKind::Context, RenderKind::Bootstrap] {
+            let sc = render_session_context(&storage, &global, &s, kind).unwrap();
+            assert!(sc.missing.is_empty());
+            assert!(!sc.rendered.contains("Onboarding needed"));
+        }
+
+        // Remove PERSONA → onboarding directive names it, in both kinds.
+        std::fs::remove_file(tmp.path().join("Agents/c.a/PERSONA.c.a.md")).unwrap();
+        for kind in [RenderKind::Context, RenderKind::Bootstrap] {
+            let sc = render_session_context(&storage, &global, &s, kind).unwrap();
+            assert!(sc.rendered.contains("Onboarding needed"));
+            assert!(sc.rendered.contains("PERSONA.md"));
+        }
+    }
+
+    /// The lean bootstrap render carries scope + persona + rules + pointers, and
+    /// omits the heavier foundational slots and the tools guide.
+    #[test]
+    fn bootstrap_render_is_lean() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        write(
+            &tmp,
+            "Agents/jarvis.tony/PERSONA.jarvis.tony.md",
+            "PERSONA-BODY",
         );
+        write(
+            &tmp,
+            "Agents/jarvis.tony/RULES.jarvis.tony.md",
+            "RULES-BODY",
+        );
+        let global = tmp.path().join("AGENT_SESSION_BOOTSTRAP.md");
         let sc = render_session_context(
             &storage,
             &global,
-            std::slice::from_ref(&tool),
             &scope(&[("agent", "jarvis"), ("user", "tony")]),
+            RenderKind::Bootstrap,
         )
         .unwrap();
-        assert!(
-            sc.rendered
-                .contains("Every call must carry these scope keys: agent=jarvis, user=tony.")
+        // Lean core present.
+        assert!(sc.rendered.contains("`agent=jarvis, user=tony`"));
+        assert!(sc.rendered.contains("PERSONA-BODY"));
+        assert!(sc.rendered.contains("RULES-BODY"));
+        assert!(sc.rendered.contains("load_session_context"));
+        assert!(sc.rendered.contains("session-layout"));
+        // Heavier sections omitted.
+        assert!(!sc.rendered.contains("<MEMORY>"));
+        assert!(!sc.rendered.contains("<USER>"));
+        assert!(!sc.rendered.contains("<PROMPT>"));
+        assert!(!sc.rendered.contains("<AGENTMEM:TOOLS>"));
+        // Same absent-files accounting as the full render.
+        assert_eq!(
+            sc.missing,
+            vec![
+                "PROMPT.md".to_string(),
+                "USER.md".to_string(),
+                "MEMORY.md".to_string()
+            ]
         );
-        assert!(
-            sc.rendered
-                .contains("- `list_memory_notes`: List the virtual paths.")
-        );
-    }
-
-    /// With no scope keys, the tools guide keeps the generic phrasing rather than
-    /// naming any specific key.
-    #[test]
-    fn tools_guide_falls_back_to_generic_phrasing_for_empty_scope() {
-        let guide = tools_guide(&[], &BTreeMap::new());
-        assert!(
-            guide.contains(
-                "Every call must carry the scope keys defined by the server's VFS scheme."
-            )
-        );
-        assert!(!guide.contains("these scope keys:"));
     }
 
     /// The scope directive names the concrete active scope as `key=value` pairs
@@ -481,51 +592,38 @@ mod tests {
         assert!(!directive.contains('='));
     }
 
-    /// The directive and the tools guide derive their `key=value` list from the
-    /// same source, so the list each emits is identical.
+    /// Both default templates lead with the bare scope banner: it appears after
+    /// the H1 and before `<PERSONA>`, not wrapped in any tag.
     #[test]
-    fn scope_directive_and_tools_guide_share_keys() {
-        let s = scope(&[("agent", "jarvis"), ("user", "tony")]);
-        let keys = scope_keys_csv(&s).unwrap();
-        assert_eq!(keys, "agent=jarvis, user=tony");
-        assert!(scope_directive(&s).contains(&keys));
-        assert!(tools_guide(&[], &s).contains(&keys));
-    }
-
-    /// The default template leads with the scope banner: it appears after the
-    /// H1 and before `<PERSONA>`, rendered bare (not wrapped in any tag).
-    #[test]
-    fn default_template_leads_with_bare_scope_banner() {
+    fn default_templates_lead_with_bare_scope_banner() {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
         let global = tmp.path().join("missing.md");
-        let sc = render_session_context(
-            &storage,
-            &global,
-            &[],
-            &scope(&[("agent", "jarvis"), ("user", "tony")]),
-        )
-        .unwrap();
-        let banner = sc.rendered.find("Active memory scope").unwrap();
-        let h1 = sc.rendered.find("# Session Context").unwrap();
-        let persona = sc.rendered.find("<PERSONA>").unwrap();
-        // Banner sits between the H1 and the first tag.
-        assert!(h1 < banner && banner < persona);
-        // It names the concrete scope and is not enclosed in a tag.
-        assert!(sc.rendered.contains("`agent=jarvis, user=tony`"));
-        let head = &sc.rendered[h1..persona];
-        assert!(!head.contains('<'));
+        for kind in [RenderKind::Context, RenderKind::Bootstrap] {
+            let sc = render_session_context(
+                &storage,
+                &global,
+                &scope(&[("agent", "jarvis"), ("user", "tony")]),
+                kind,
+            )
+            .unwrap();
+            let banner = sc.rendered.find("Active memory scope").unwrap();
+            let h1 = sc.rendered.find("# Session Context").unwrap();
+            let persona = sc.rendered.find("<PERSONA>").unwrap();
+            assert!(h1 < banner && banner < persona);
+            assert!(sc.rendered.contains("`agent=jarvis, user=tony`"));
+            assert!(!sc.rendered[h1..persona].contains('<'));
+        }
     }
 
     /// `{{files.user}}` (file contents) and `{{scope.user}}` (scope value) are
-    /// distinct.
+    /// distinct in a context template.
     #[test]
     fn file_and_scope_namespaces_are_distinct() {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
         write(&tmp, "Agents/c.tony/USER.c.tony.md", "USER-FILE-BODY");
         let global = tmp.path().join("missing.md");
-        // Per-scope template exercising both namespaces.
         write(
             &tmp,
             "Agents/c.tony/AGENT_SESSION_CONTEXT.c.tony.md",
@@ -534,54 +632,104 @@ mod tests {
         let sc = render_session_context(
             &storage,
             &global,
-            &[],
             &scope(&[("agent", "c"), ("user", "tony")]),
+            RenderKind::Context,
         )
         .unwrap();
         assert_eq!(sc.rendered, "file=USER-FILE-BODY scope=tony");
     }
 
-    /// Per-scope template wins over the global file, which wins over the default.
+    /// Context resolution: per-scope `AGENT_SESSION_CONTEXT.md` wins over the
+    /// global file, which wins over the compiled default.
     #[test]
-    fn layered_resolution_prefers_per_scope_then_global_then_default() {
+    fn context_layered_resolution() {
         let tmp = TempDir::new().unwrap();
         let storage = storage_for(&tmp, "<agent>.<user>");
         let global = tmp.path().join("GLOBAL.md");
+        let s = scope(&[("agent", "c"), ("user", "a")]);
 
-        // Only default available.
-        let sc = render_session_context(
-            &storage,
-            &global,
-            &[],
-            &scope(&[("agent", "c"), ("user", "a")]),
-        )
-        .unwrap();
+        let sc = render_session_context(&storage, &global, &s, RenderKind::Context).unwrap();
         assert!(sc.rendered.contains("# Session Context"));
 
-        // Global present → used.
-        std::fs::write(&global, "GLOBAL-TEMPLATE").unwrap();
-        let sc = render_session_context(
-            &storage,
-            &global,
-            &[],
-            &scope(&[("agent", "c"), ("user", "a")]),
-        )
-        .unwrap();
-        assert_eq!(sc.rendered, "GLOBAL-TEMPLATE");
+        std::fs::write(&global, "GLOBAL-CONTEXT").unwrap();
+        let sc = render_session_context(&storage, &global, &s, RenderKind::Context).unwrap();
+        assert_eq!(sc.rendered, "GLOBAL-CONTEXT");
 
-        // Per-scope present → overrides global.
         write(
             &tmp,
             "Agents/c.a/AGENT_SESSION_CONTEXT.c.a.md",
-            "PER-SCOPE-TEMPLATE",
+            "PER-SCOPE-CONTEXT",
         );
-        let sc = render_session_context(
-            &storage,
-            &global,
-            &[],
-            &scope(&[("agent", "c"), ("user", "a")]),
-        )
-        .unwrap();
-        assert_eq!(sc.rendered, "PER-SCOPE-TEMPLATE");
+        let sc = render_session_context(&storage, &global, &s, RenderKind::Context).unwrap();
+        assert_eq!(sc.rendered, "PER-SCOPE-CONTEXT");
+    }
+
+    /// Bootstrap resolution uses its own per-scope file `AGENT_SESSION_BOOTSTRAP.md`
+    /// and global path, independent of the context template.
+    #[test]
+    fn bootstrap_layered_resolution() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        let global = tmp.path().join("GLOBAL_BOOTSTRAP.md");
+        let s = scope(&[("agent", "c"), ("user", "a")]);
+
+        std::fs::write(&global, "GLOBAL-BOOTSTRAP").unwrap();
+        let sc = render_session_context(&storage, &global, &s, RenderKind::Bootstrap).unwrap();
+        assert_eq!(sc.rendered, "GLOBAL-BOOTSTRAP");
+
+        write(
+            &tmp,
+            "Agents/c.a/AGENT_SESSION_BOOTSTRAP.c.a.md",
+            "PER-SCOPE-BOOTSTRAP",
+        );
+        let sc = render_session_context(&storage, &global, &s, RenderKind::Bootstrap).unwrap();
+        assert_eq!(sc.rendered, "PER-SCOPE-BOOTSTRAP");
+    }
+
+    /// The default layout carries the vault-mechanics guidance and the caps, and
+    /// omits the missing-files onboarding paragraph.
+    #[test]
+    fn layout_default_content() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        let global = tmp.path().join("missing.md");
+        let rendered =
+            render_layout(&storage, &global, &scope(&[("agent", "c"), ("user", "a")])).unwrap();
+        assert!(rendered.contains("# Memory Layout"));
+        assert!(rendered.contains("ordinary filesystem"));
+        assert!(rendered.contains("relative to the agents folder"));
+        assert!(rendered.contains("prepend your agents-folder name"));
+        assert!(rendered.contains("USER.md` ≤ 100 lines"));
+        assert!(rendered.contains("MEMORY.md` ≤ 200 lines"));
+        // The internal suffix mechanism is not exposed.
+        assert!(!rendered.contains("suffix"));
+        // Onboarding guidance lives in the renderer, not the layout.
+        assert!(!rendered.contains("Onboarding needed"));
+        assert!(!rendered.contains("interview the user"));
+    }
+
+    /// Layout resolution: per-scope `AGENT_MEMORY_LAYOUT.md` wins over global,
+    /// which wins over the compiled default, and `{{scope.*}}` substitutes.
+    #[test]
+    fn layout_layered_resolution_and_scope_substitution() {
+        let tmp = TempDir::new().unwrap();
+        let storage = storage_for(&tmp, "<agent>.<user>");
+        let global = tmp.path().join("GLOBAL_LAYOUT.md");
+        let s = scope(&[("agent", "c"), ("user", "a")]);
+
+        let rendered = render_layout(&storage, &global, &s).unwrap();
+        assert!(rendered.contains("# Memory Layout"));
+
+        std::fs::write(&global, "GLOBAL-LAYOUT").unwrap();
+        let rendered = render_layout(&storage, &global, &s).unwrap();
+        assert_eq!(rendered, "GLOBAL-LAYOUT");
+
+        write(
+            &tmp,
+            "Agents/c.a/AGENT_MEMORY_LAYOUT.c.a.md",
+            "layout for {{scope.agent}}",
+        );
+        let rendered = render_layout(&storage, &global, &s).unwrap();
+        assert_eq!(rendered, "layout for c");
     }
 }

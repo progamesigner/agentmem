@@ -64,16 +64,21 @@ async fn resource_template_and_read_render_context() {
         .await
         .unwrap();
 
-    // resources/templates/list → URI params follow the scheme.
+    // resources/templates/list → the three session resources, URI params follow
+    // the scheme.
     let templates = service
         .list_resource_templates(Default::default())
         .await
         .unwrap();
-    assert_eq!(templates.resource_templates.len(), 1);
-    assert_eq!(
-        templates.resource_templates[0].uri_template,
-        "agentmem://session-context/{agent}/{user}"
-    );
+    let uris: Vec<&str> = templates
+        .resource_templates
+        .iter()
+        .map(|t| t.uri_template.as_str())
+        .collect();
+    assert_eq!(templates.resource_templates.len(), 3);
+    assert!(uris.contains(&"agentmem://session-context/{agent}/{user}"));
+    assert!(uris.contains(&"agentmem://session-bootstrap/{agent}/{user}"));
+    assert!(uris.contains(&"agentmem://session-layout/{agent}/{user}"));
 
     // resources/read for a populated scope renders the persona body.
     let read = service
@@ -99,7 +104,7 @@ async fn resource_template_and_read_render_context() {
 }
 
 #[tokio::test]
-async fn rendered_guide_describes_interview_then_batch_commit() {
+async fn onboarding_directive_appears_for_a_fresh_scope() {
     let tmp = assert_fs::TempDir::new().unwrap();
     let service = serve(&tmp, "<agent>.<user>").await;
 
@@ -112,16 +117,11 @@ async fn rendered_guide_describes_interview_then_batch_commit() {
         .unwrap();
     let text = resource_text(&read);
     assert!(text.contains("(not yet recorded"));
-    // Interview first, covering the four bootstrap dimensions.
-    assert!(text.contains("interview the user first"));
+    // The onboarding directive prompts an interview, then a batch commit.
+    assert!(text.contains("Onboarding needed"));
     assert!(text.contains("identity, role, working style, and boundaries"));
-    // Distilled into the agent's own words, not a transcript.
-    assert!(text.contains("your own concise wording"));
-    assert!(text.contains("not a verbatim\ntranscript of the user's words"));
-    // Committed in one batch call.
-    assert!(text.contains(
-        "commit all affected files in one\n`evolve_core_persona` call with multiple `updates`"
-    ));
+    assert!(text.contains("evolve_core_persona"));
+    assert!(text.contains("`updates` batch form"));
 
     service.cancel().await.unwrap();
 }

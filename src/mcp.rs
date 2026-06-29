@@ -32,6 +32,12 @@ use crate::tools::Toolbox;
 const SESSION_CONTEXT_URI_PREFIX: &str = "agentmem://session-context/";
 /// The shared name of the session-context resource and prompt.
 const SESSION_CONTEXT_NAME: &str = "session-context";
+/// The URI prefix and name for the lean session-bootstrap resource.
+const SESSION_BOOTSTRAP_URI_PREFIX: &str = "agentmem://session-bootstrap/";
+const SESSION_BOOTSTRAP_NAME: &str = "session-bootstrap";
+/// The URI prefix and name for the layout resource.
+const SESSION_LAYOUT_URI_PREFIX: &str = "agentmem://session-layout/";
+const SESSION_LAYOUT_NAME: &str = "session-layout";
 
 /// The MCP server handler. Cheap to clone — the shared [`Toolbox`] lives behind an
 /// `Arc`, so the HTTP transport's per-session factory hands out lightweight
@@ -66,6 +72,8 @@ impl AgentmemServer {
             config.policy,
             config.timezone,
             config.session_context_template_file.clone(),
+            config.session_bootstrap_template_file.clone(),
+            config.memory_layout_template_file.clone(),
             recall,
         );
         AgentmemServer {
@@ -100,37 +108,53 @@ impl AgentmemServer {
     }
 
     /// Render the session-context for a validated scope map, checked against the
-    /// caller's grant. Exposed so the HTTP `GET /v1/context` handler can reuse
-    /// the same renderer (and the same authorization) as the MCP surfaces.
+    /// caller's grant. `kind` selects the full `Context` or lean `Bootstrap`
+    /// render. Exposed so the HTTP `GET /v1/context` and `GET /v1/bootstrap`
+    /// handlers can reuse the same renderer (and authorization) as the MCP
+    /// resources.
     pub fn render_session_context(
         &self,
         scope: &BTreeMap<String, String>,
         grant: &Grant,
+        kind: crate::session_context::RenderKind,
     ) -> Result<crate::session_context::SessionContext, AgentmemError> {
-        self.toolbox.render_session_context(scope, grant)
+        self.toolbox.render_session_context(scope, grant, kind)
     }
 
-    /// The `agentmem://session-context/{k1}/{k2}/…` URI template for the active
-    /// scheme; the params follow the scheme's placeholders in order.
-    fn session_context_uri_template(&self) -> String {
+    /// Render the layout document for a validated scope map, checked against the
+    /// caller's grant. Exposed so the HTTP `GET /v1/layout` handler can reuse the
+    /// same renderer (and authorization) as the `session-layout` resource.
+    pub fn render_layout(
+        &self,
+        scope: &BTreeMap<String, String>,
+        grant: &Grant,
+    ) -> Result<String, AgentmemError> {
+        self.toolbox.render_layout(scope, grant)
+    }
+
+    /// The `agentmem://<prefix>/{k1}/{k2}/…` URI template for the active scheme;
+    /// the params follow the scheme's placeholders in order.
+    fn uri_template_for(&self, prefix: &str) -> String {
         let params: Vec<String> = self
             .toolbox
             .scheme_placeholders()
             .iter()
             .map(|k| format!("{{{k}}}"))
             .collect();
-        format!("{SESSION_CONTEXT_URI_PREFIX}{}", params.join("/"))
+        format!("{prefix}{}", params.join("/"))
     }
 
-    /// Map the scheme's placeholders onto the path segments of a concrete
-    /// session-context URI, returning the scope map. Errors if the URI does not
-    /// carry exactly one segment per placeholder.
-    fn scope_from_uri(&self, uri: &str) -> Result<BTreeMap<String, String>, McpError> {
-        let rest = uri
-            .strip_prefix(SESSION_CONTEXT_URI_PREFIX)
-            .ok_or_else(|| {
-                McpError::invalid_params(format!("unknown resource URI '{uri}'"), None)
-            })?;
+    /// Map the scheme's placeholders onto the path segments of a concrete resource
+    /// URI carrying the given prefix, returning the scope map. Errors if the URI
+    /// does not carry exactly one segment per placeholder.
+    fn scope_from_uri(
+        &self,
+        prefix: &str,
+        uri: &str,
+    ) -> Result<BTreeMap<String, String>, McpError> {
+        let rest = uri.strip_prefix(prefix).ok_or_else(|| {
+            McpError::invalid_params(format!("unknown resource URI '{uri}'"), None)
+        })?;
         let placeholders = self.toolbox.scheme_placeholders();
         let segments: Vec<&str> = if rest.is_empty() {
             Vec::new()
@@ -284,20 +308,46 @@ impl ServerHandler for AgentmemServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        let template = RawResourceTemplate {
-            uri_template: self.session_context_uri_template(),
-            name: SESSION_CONTEXT_NAME.to_string(),
-            title: Some("Session context".to_string()),
-            description: Some(
-                "The rendered session-context bootstrap for a scope: foundational \
-                 files woven into the configured template with a memory-tools guide."
-                    .to_string(),
-            ),
-            mime_type: Some("text/markdown".to_string()),
-            icons: None,
-        }
-        .no_annotation();
-        Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
+        let templates = vec![
+            RawResourceTemplate {
+                uri_template: self.uri_template_for(SESSION_CONTEXT_URI_PREFIX),
+                name: SESSION_CONTEXT_NAME.to_string(),
+                title: Some("Session context".to_string()),
+                description: Some(
+                    "The full rendered session context for a scope: the foundational \
+                     files woven into the configured template."
+                        .to_string(),
+                ),
+                mime_type: Some("text/markdown".to_string()),
+                icons: None,
+            }
+            .no_annotation(),
+            RawResourceTemplate {
+                uri_template: self.uri_template_for(SESSION_BOOTSTRAP_URI_PREFIX),
+                name: SESSION_BOOTSTRAP_NAME.to_string(),
+                title: Some("Session bootstrap".to_string()),
+                description: Some(
+                    "The lean session bootstrap for a scope: scope, persona, rules, and \
+                     pointers to the full context and the layout."
+                        .to_string(),
+                ),
+                mime_type: Some("text/markdown".to_string()),
+                icons: None,
+            }
+            .no_annotation(),
+            RawResourceTemplate {
+                uri_template: self.uri_template_for(SESSION_LAYOUT_URI_PREFIX),
+                name: SESSION_LAYOUT_NAME.to_string(),
+                title: Some("Session layout".to_string()),
+                description: Some(
+                    "The vault layout and conventions guidance for a scope.".to_string(),
+                ),
+                mime_type: Some("text/markdown".to_string()),
+                icons: None,
+            }
+            .no_annotation(),
+        ];
+        Ok(ListResourceTemplatesResult::with_all_items(templates))
     }
 
     async fn read_resource(
@@ -305,13 +355,33 @@ impl ServerHandler for AgentmemServer {
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        let scope = self.scope_from_uri(&request.uri)?;
-        let sc = self
-            .toolbox
-            .render_session_context(&scope, &request_grant(&context))
-            .map_err(to_mcp_error)?;
+        let grant = request_grant(&context);
+        // Dispatch by URI prefix to the matching render. Longest/most-specific is
+        // unambiguous: the three prefixes share no common tail.
+        let rendered = if request.uri.starts_with(SESSION_BOOTSTRAP_URI_PREFIX) {
+            let scope = self.scope_from_uri(SESSION_BOOTSTRAP_URI_PREFIX, &request.uri)?;
+            self.toolbox
+                .render_session_context(
+                    &scope,
+                    &grant,
+                    crate::session_context::RenderKind::Bootstrap,
+                )
+                .map_err(to_mcp_error)?
+                .rendered
+        } else if request.uri.starts_with(SESSION_LAYOUT_URI_PREFIX) {
+            let scope = self.scope_from_uri(SESSION_LAYOUT_URI_PREFIX, &request.uri)?;
+            self.toolbox
+                .render_layout(&scope, &grant)
+                .map_err(to_mcp_error)?
+        } else {
+            let scope = self.scope_from_uri(SESSION_CONTEXT_URI_PREFIX, &request.uri)?;
+            self.toolbox
+                .render_session_context(&scope, &grant, crate::session_context::RenderKind::Context)
+                .map_err(to_mcp_error)?
+                .rendered
+        };
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
-            sc.rendered,
+            rendered,
             request.uri,
         )]))
     }
@@ -354,7 +424,11 @@ impl ServerHandler for AgentmemServer {
         let scope = self.scope_from_prompt_args(&request.arguments)?;
         let sc = self
             .toolbox
-            .render_session_context(&scope, &request_grant(&context))
+            .render_session_context(
+                &scope,
+                &request_grant(&context),
+                crate::session_context::RenderKind::Context,
+            )
             .map_err(to_mcp_error)?;
         Ok(GetPromptResult::new(vec![PromptMessage::new_text(
             PromptMessageRole::User,

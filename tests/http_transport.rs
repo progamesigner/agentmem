@@ -483,9 +483,13 @@ async fn context_endpoint_renders_markdown_bootstrap() {
         "expected text/markdown content type"
     );
     let body = resp.text().await.unwrap();
-    // A fresh vault renders the compiled-in default template.
+    // A fresh vault renders the compiled-in default context template: the
+    // foundational slots and a pointer to the layout surface, no tools guide
+    // and no embedded layout prose.
     assert!(body.contains("# Session Context"));
-    assert!(body.contains("<AGENTMEM:TOOLS>"));
+    assert!(body.contains("<PERSONA>"));
+    assert!(!body.contains("<AGENTMEM:TOOLS>"));
+    assert!(body.contains("session-layout"));
 
     child.kill().await.unwrap();
 }

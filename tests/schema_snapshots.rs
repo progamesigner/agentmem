@@ -33,6 +33,8 @@ fn schemas_for(scheme: &str) -> Value {
         Policy::Namespaced,
         Tz::UTC,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        tmp.path().join("AGENT_SESSION_BOOTSTRAP.md"),
+        tmp.path().join("AGENT_MEMORY_LAYOUT.md"),
         None,
     );
 
@@ -75,6 +77,8 @@ fn recall_schema_for(scheme: &str) -> Value {
         Policy::Namespaced,
         Tz::UTC,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        tmp.path().join("AGENT_SESSION_BOOTSTRAP.md"),
+        tmp.path().join("AGENT_MEMORY_LAYOUT.md"),
         recall,
     );
     let tool = toolbox

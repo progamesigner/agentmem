@@ -32,6 +32,7 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use crate::config::{Grant, TokenGrants};
 use crate::error::AgentmemError;
 use crate::mcp::AgentmemServer;
+use crate::session_context::RenderKind;
 
 /// Serve over Streamable HTTP, binding `bind` until a termination signal arrives.
 ///
@@ -107,6 +108,8 @@ pub async fn serve(
     let mut gated = Router::new()
         .route_service("/mcp", mcp_service)
         .route("/v1/context", get(context))
+        .route("/v1/bootstrap", get(bootstrap))
+        .route("/v1/layout", get(layout))
         .with_state(server);
     if bearer.is_some() || tokens.is_some() {
         let auth = Arc::new(HttpAuth {
@@ -143,7 +146,7 @@ async fn readyz(State(server): State<AgentmemServer>) -> Response {
     }
 }
 
-/// `GET /v1/context` — render the per-scope session-context bootstrap.
+/// `GET /v1/context` — render the per-scope full session context.
 ///
 /// Each VFS-scheme placeholder is supplied as a query parameter (e.g.
 /// `?agent=jarvis&user=tony`); the scheme's placeholders are bound into the
@@ -156,59 +159,105 @@ async fn context(
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    // The grant the auth middleware resolved for this request; absent (no
-    // authentication configured) means every scope.
+    let (scope, grant) = match bind_scope(&server, grant, &params) {
+        Ok(bound) => bound,
+        Err(resp) => return *resp,
+    };
+    match server.render_session_context(&scope, &grant, RenderKind::Context) {
+        Ok(sc) => render_payload(&headers, sc.rendered, sc.missing),
+        Err(err) => render_error(err),
+    }
+}
+
+/// `GET /v1/bootstrap` — render the per-scope lean session bootstrap. Shares the
+/// scope binding, response negotiation, auth gate, and error mapping with
+/// `GET /v1/context`; only the render kind differs.
+async fn bootstrap(
+    State(server): State<AgentmemServer>,
+    grant: Option<Extension<Grant>>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let (scope, grant) = match bind_scope(&server, grant, &params) {
+        Ok(bound) => bound,
+        Err(resp) => return *resp,
+    };
+    match server.render_session_context(&scope, &grant, RenderKind::Bootstrap) {
+        Ok(sc) => render_payload(&headers, sc.rendered, sc.missing),
+        Err(err) => render_error(err),
+    }
+}
+
+/// `GET /v1/layout` — render the per-scope layout document. Shares the scope
+/// binding, response negotiation, auth gate, and error mapping with
+/// `GET /v1/context`. The JSON form carries an empty `missing` list.
+async fn layout(
+    State(server): State<AgentmemServer>,
+    grant: Option<Extension<Grant>>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let (scope, grant) = match bind_scope(&server, grant, &params) {
+        Ok(bound) => bound,
+        Err(resp) => return *resp,
+    };
+    match server.render_layout(&scope, &grant) {
+        Ok(rendered) => render_payload(&headers, rendered, Vec::new()),
+        Err(err) => render_error(err),
+    }
+}
+
+/// Resolve the request's grant (all-scopes when no authentication is configured)
+/// and bind the scheme placeholders from the query. Rejects any non-placeholder
+/// query parameter with a `400`; absent or empty values fall through to the
+/// renderer's own validation (`MissingScope` / `InvalidArgument`). Shared by the
+/// three `/v1/*` render endpoints.
+fn bind_scope(
+    server: &AgentmemServer,
+    grant: Option<Extension<Grant>>,
+    params: &HashMap<String, String>,
+) -> Result<(BTreeMap<String, String>, Grant), Box<Response>> {
     let grant = grant.map(|Extension(g)| g).unwrap_or(Grant::AllScopes);
     let placeholders = server.scheme_placeholders();
-
-    // Reject any query parameter that is not a scheme placeholder.
     if let Some(unexpected) = params
         .keys()
         .find(|k| !placeholders.iter().any(|p| p == *k))
     {
-        return error(
+        return Err(Box::new(error(
             StatusCode::BAD_REQUEST,
             format!("unexpected query parameter '{unexpected}'"),
-        );
+        )));
     }
-
-    // Bind the placeholders, in scheme order. Absent or empty values fall through
-    // to the renderer's own validation (MissingScope / InvalidArgument).
     let mut scope: BTreeMap<String, String> = BTreeMap::new();
     for ph in &placeholders {
         if let Some(value) = params.get(ph) {
             scope.insert(ph.clone(), value.clone());
         }
     }
+    Ok((scope, grant))
+}
 
-    match server.render_session_context(&scope, &grant) {
-        Ok(sc) => {
-            if prefers_json(&headers) {
-                Json(serde_json::json!({
-                    "rendered": sc.rendered,
-                    "missing": sc.missing,
-                }))
-                .into_response()
-            } else {
-                (
-                    [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
-                    sc.rendered,
-                )
-                    .into_response()
-            }
-        }
-        Err(err) => {
-            let status = match err {
-                AgentmemError::MissingScope { .. } | AgentmemError::InvalidArgument { .. } => {
-                    StatusCode::BAD_REQUEST
-                }
-                // The bound scope is outside the presented token's grant.
-                AgentmemError::ScopeDenied { .. } => StatusCode::FORBIDDEN,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            error(status, err.to_string())
-        }
+/// Render a `{ rendered, missing }` payload as `text/markdown` by default, or as
+/// JSON when the `Accept` header prefers `application/json`.
+fn render_payload(headers: &HeaderMap, rendered: String, missing: Vec<String>) -> Response {
+    if prefers_json(headers) {
+        Json(serde_json::json!({ "rendered": rendered, "missing": missing })).into_response()
+    } else {
+        ([(CONTENT_TYPE, "text/markdown; charset=utf-8")], rendered).into_response()
     }
+}
+
+/// Map a render error to an HTTP response with the shared `{ "error": … }` shape:
+/// scope-validation errors to `400`, grant denials to `403`, IO failures to `500`.
+fn render_error(err: AgentmemError) -> Response {
+    let status = match err {
+        AgentmemError::MissingScope { .. } | AgentmemError::InvalidArgument { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        AgentmemError::ScopeDenied { .. } => StatusCode::FORBIDDEN,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    error(status, err.to_string())
 }
 
 /// `true` when the `Accept` header asks for `application/json`.

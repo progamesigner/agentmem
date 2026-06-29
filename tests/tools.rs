@@ -51,6 +51,8 @@ fn recall_toolbox_tz(tmp: &TempDir, timezone: Tz) -> Toolbox {
         Policy::Namespaced,
         timezone,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        tmp.path().join("AGENT_SESSION_BOOTSTRAP.md"),
+        tmp.path().join("AGENT_MEMORY_LAYOUT.md"),
         recall,
     )
 }
@@ -86,6 +88,8 @@ fn frozen_toolbox(tmp: &TempDir, backend: RecallBackendKind) -> Toolbox {
         Policy::Namespaced,
         Tz::UTC,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        tmp.path().join("AGENT_SESSION_BOOTSTRAP.md"),
+        tmp.path().join("AGENT_MEMORY_LAYOUT.md"),
         recall,
     )
 }
@@ -102,6 +106,8 @@ fn toolbox(tmp: &TempDir, agents: &str, scheme: &str, policy: Policy) -> Toolbox
         policy,
         Tz::UTC,
         tmp.path().join("AGENT_SESSION_CONTEXT.md"),
+        tmp.path().join("AGENT_SESSION_BOOTSTRAP.md"),
+        tmp.path().join("AGENT_MEMORY_LAYOUT.md"),
         None,
     )
 }

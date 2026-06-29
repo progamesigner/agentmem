@@ -590,8 +590,10 @@ impl Config {
                 None => root_dir.join(default_file),
             }
         };
-        let session_context_template_file =
-            resolve_template_file(VAR_SESSION_CONTEXT_TEMPLATE_FILE, DEFAULT_SESSION_CONTEXT_FILE);
+        let session_context_template_file = resolve_template_file(
+            VAR_SESSION_CONTEXT_TEMPLATE_FILE,
+            DEFAULT_SESSION_CONTEXT_FILE,
+        );
         let session_bootstrap_template_file = resolve_template_file(
             VAR_SESSION_BOOTSTRAP_TEMPLATE_FILE,
             DEFAULT_SESSION_BOOTSTRAP_FILE,
@@ -1079,7 +1081,10 @@ mod tests {
             cfg.session_bootstrap_template_file,
             root.join("custom/lean.md")
         );
-        assert_eq!(cfg.memory_layout_template_file, root.join("custom/layout.md"));
+        assert_eq!(
+            cfg.memory_layout_template_file,
+            root.join("custom/layout.md")
+        );
 
         // Absolute override is used as-is.
         let cfg = build(with_root(
